@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: set up go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test -race -count=1 ./...
+      - name: verify fixtures (the headline demo)
+        run: go run ./cmd/skillsig verify --no-color ./testdata/skills/

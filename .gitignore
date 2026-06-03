@@ -1,0 +1,37 @@
+# Binaries
+/skillsig
+/dist/
+*.exe
+*.test
+*.out
+
+# Local state
+.skillsig/
+*.bundle.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Agent tooling — must never ship
+.claude/
+CLAUDE.md
+
+# Generated demo artifacts (tape script is committed; renders are not)
+/assets/demo.cast
+/assets/demo.gif
+
+# build scaffolding (not part of the project)
+/.builder_prompt_*.md
+/.spawn.*
+/.build_metadata*
+/.build_stages.log
+/.run_build_stages.sh
+/DRIFT_REPORT.md
+.spawn.*
+.builder_*
+.build_metadata*
+.stage_*
+BUILD_SETUP_NEXT_STEPS.md

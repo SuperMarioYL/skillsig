@@ -1,0 +1,104 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/SuperMarioYL/skillsig/internal/manifest"
+	"github.com/SuperMarioYL/skillsig/internal/report"
+	"github.com/SuperMarioYL/skillsig/internal/scope"
+)
+
+// ErrCIDrift is returned (and surfaces as exit-1) when --ci is set and any row
+// of the verify table is UNSIGNED or SCOPE-DRIFTED. Exposed as a value so
+// scripts can grep for it in stderr if they ever want to.
+var ErrCIDrift = errors.New("skill scope drift detected (--ci)")
+
+func newVerifyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "verify [path]",
+		Short: "Walk a skills directory and print a TRUSTED / UNSIGNED / SCOPE-DRIFTED table",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			ci, _ := cmd.Flags().GetBool("ci")
+			noColor, _ := cmd.Flags().GetBool("no-color")
+			return runVerify(cmd.OutOrStdout(), path, ci, !noColor)
+		},
+	}
+	cmd.Flags().Bool("ci", false, "exit non-zero on UNSIGNED or SCOPE-DRIFTED rows")
+	cmd.Flags().Bool("no-color", false, "disable color output (stable for diffing)")
+	return cmd
+}
+
+// runVerify is the testable core. It walks path, evaluates each skill, prints
+// the report, and (optionally) returns ErrCIDrift.
+func runVerify(out io.Writer, path string, ci, allowColor bool) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("verify: %s is not a directory", path)
+	}
+
+	dirs, err := manifest.FindSkillDirs(path)
+	if err != nil {
+		return fmt.Errorf("verify: scan: %w", err)
+	}
+	if len(dirs) == 0 {
+		fmt.Fprintf(out, "no SKILL.md files found under %s\n", path)
+		return nil
+	}
+
+	skills := make([]*manifest.Skill, 0, len(dirs))
+	for _, d := range dirs {
+		s, err := manifest.ParseSkill(d)
+		if err != nil {
+			return fmt.Errorf("verify: %w", err)
+		}
+		skills = append(skills, s)
+	}
+
+	results := scope.EvaluateAll(skills)
+	useColor := allowColor && isTTY(out)
+	if err := report.Render(out, results, useColor); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, report.Summary(results))
+
+	if ci {
+		for _, r := range results {
+			if r.Verdict == scope.VerdictUnsigned || r.Verdict == scope.VerdictScopeDrifted {
+				return ErrCIDrift
+			}
+		}
+	}
+	return nil
+}
+
+// isTTY checks whether w is a terminal so we don't paint ANSI escapes into a
+// pipe or test buffer. Stdlib-only — inspects the file mode for a character
+// device, which catches the common case (terminal stdout) without needing
+// golang.org/x/term.
+func isTTY(w io.Writer) bool {
+	if _, set := os.LookupEnv("NO_COLOR"); set {
+		return false
+	}
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
