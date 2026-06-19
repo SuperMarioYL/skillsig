@@ -25,10 +25,10 @@ const LockFileName = "lock.yaml"
 // manifest's declares against this snapshot — that is the m3 drift check that
 // catches a re-signed skill quietly broadening its grants.
 type LockEntry struct {
-	SkillID  string             `yaml:"skill_id"`
-	Version  string             `yaml:"version"`
-	Declares manifest.Declares  `yaml:"declares"`
-	SeenAt   string             `yaml:"seen_at"`
+	SkillID  string            `yaml:"skill_id"`
+	Version  string            `yaml:"version"`
+	Declares manifest.Declares `yaml:"declares"`
+	SeenAt   string            `yaml:"seen_at"`
 }
 
 // LockFile is the on-disk shape of ~/.skillsig/lock.yaml. The map is keyed by
@@ -183,38 +183,105 @@ func applyLockDrift(r Result, sk *manifest.Skill, lock *LockFile) Result {
 // intentionally conservative: a removed entry is NOT growth, only additions
 // are. The string entries returned are human-readable for the report; the
 // caller does not parse them.
+//
+// Growth is glob-aware on every axis. A new entry that is already covered by a
+// previous declaration is a refinement, not an escalation, and is NOT reported
+// — e.g. tightening "Bash(git status*)" to "Bash(git status -s)", or narrowing
+// "~/**" to "~/.claude/config". This mirrors the in-version compareTools logic
+// so the diff/lock path and the verify path agree on what "broader" means.
 func scopeGrowth(prev, curr manifest.Declares) []string {
 	var out []string
 	if curr.Model != prev.Model && prev.Model != "" {
 		out = append(out, fmt.Sprintf("model: %s → %s", prev.Model, curr.Model))
 	}
-	if added := added(prev.Tools, curr.Tools); len(added) > 0 {
+	if added := addedTools(prev.Tools, curr.Tools); len(added) > 0 {
 		out = append(out, "tools+ ["+strings.Join(added, ", ")+"]")
 	}
-	if added := added(prev.FSWrite, curr.FSWrite); len(added) > 0 {
+	if added := addedPaths(prev.FSWrite, curr.FSWrite); len(added) > 0 {
 		out = append(out, "fs_write+ ["+strings.Join(added, ", ")+"]")
 	}
-	if added := added(prev.NetworkEgress, curr.NetworkEgress); len(added) > 0 {
+	if added := addedPaths(prev.NetworkEgress, curr.NetworkEgress); len(added) > 0 {
 		out = append(out, "network_egress+ ["+strings.Join(added, ", ")+"]")
 	}
 	return out
 }
 
-// added returns every element of curr that is not present in prev, preserving
-// curr's order. Used by scopeGrowth on each declared-scope axis.
-func added(prev, curr []string) []string {
+// addedTools returns every tool grant in curr that is NOT already covered by
+// prev under the Claude Code grant grammar (literal match or a "Tool(prefix*)"
+// wildcard). It reuses the same covered() predicate as the in-version scope
+// check so a refinement of an existing wildcard is never mistaken for an
+// escalation. curr's order is preserved.
+func addedTools(prev, curr []string) []string {
 	if len(curr) == 0 {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(prev))
-	for _, p := range prev {
-		seen[p] = struct{}{}
-	}
 	var out []string
 	for _, c := range curr {
-		if _, ok := seen[c]; !ok {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if !covered(prev, c) {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// addedPaths returns every fs_write / network_egress entry in curr that is NOT
+// already covered by some entry in prev, treating a trailing "**" or "*" in a
+// prev entry as a glob. A new path that falls under an existing prev glob is a
+// refinement (narrowing), not growth, so it is not reported. curr's order is
+// preserved.
+func addedPaths(prev, curr []string) []string {
+	if len(curr) == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range curr {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if !pathCovered(prev, c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// pathCovered reports whether path is covered by any entry in declared. An
+// entry covers path when they are equal, or when the entry ends in "*" / "**"
+// and path shares the entry's literal prefix. "**" and "*" are treated the
+// same here (prefix match) because fs_write / network_egress globs are coarse
+// scope declarations, not a full path matcher.
+func pathCovered(declared []string, path string) bool {
+	for _, d := range declared {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if d == path {
+			return true
+		}
+		prefix, isGlob := globPrefix(d)
+		if isGlob && strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// globPrefix strips a trailing "**" or "*" off a path glob and reports whether
+// one was present. "${WORKSPACE}/**" → ("${WORKSPACE}/", true);
+// "~/.claude/config" → ("~/.claude/config", false).
+func globPrefix(s string) (prefix string, isGlob bool) {
+	switch {
+	case strings.HasSuffix(s, "**"):
+		return strings.TrimSuffix(s, "**"), true
+	case strings.HasSuffix(s, "*"):
+		return strings.TrimSuffix(s, "*"), true
+	default:
+		return s, false
+	}
 }
