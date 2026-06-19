@@ -6,8 +6,34 @@ All notable changes to skillsig are tracked here. Format roughly follows
 
 ## [Unreleased]
 
-Nothing yet — m3 (`skillsig diff old/ new/` + lockfile-driven cross-version
-drift) and the v0.2 hosted-mirror tier are next.
+Nothing yet — the v0.2 hosted-mirror tier (`skillsig.cloud` + team policy +
+webhook alerts) is next.
+
+## [0.2.0] — 2026-06-19
+
+First feature iteration on top of the v0.1 line. Tightens cross-version drift
+correctness and gives CI a machine-readable output it can branch on.
+
+### Added
+- `verify --json` and `diff --json`: emit a stable, snake-keyed JSON report
+  instead of the human table. `verify --json` carries a per-skill array, a
+  summary tally, and a top-level `drift` boolean (true iff any row is UNSIGNED
+  or SCOPE-DRIFTED — the same condition `--ci` exits non-zero on). `diff --json`
+  carries `escalation` plus the offending grants. CI pipelines can now parse
+  verdicts with `jq` rather than scraping the colored table.
+- `report.RenderJSON` backing the new flag, alongside the existing `Render`.
+
+### Fixed
+- Cross-version scope diff (`skillsig diff` and the `~/.skillsig/lock.yaml`
+  lock check) is now glob-aware on every axis. Previously `scopeGrowth` used a
+  literal string set-difference, so *tightening* an existing grant was reported
+  as an escalation: narrowing `Bash(git status*)` to `Bash(git status -s)`, or
+  narrowing `${WORKSPACE}/**` to `${WORKSPACE}/build/out.txt`, both falsely
+  failed CI. The diff now reuses the same coverage predicate as the in-version
+  `verify` check (literal match or a `Tool(prefix*)` / path-prefix glob), so a
+  refinement under an already-declared scope is no longer flagged — only a
+  genuinely new, uncovered grant is. Regression tests cover both the tools axis
+  and the fs_write / network_egress path axes.
 
 ## [0.1.0] — 2026-06-04
 

@@ -176,6 +176,7 @@ matches Claude Code's grant grammar) becomes the reason for `SCOPE-DRIFTED`
 | --- | --- | --- | --- |
 | `SKILLSIG_HOME` | env | `$HOME/.skillsig` | Where the lockfile and ephemeral credentials live |
 | `--ci` | flag | `false` | Exit non-zero on UNSIGNED or SCOPE-DRIFTED |
+| `--json` | flag | `false` | Emit a machine-readable JSON report (`verify` / `diff`) for `jq` in CI |
 | `--no-color` | flag | `false` | Strip ANSI escapes (diffable output) |
 | `attestation.sigstore_bundle` | yaml | `./skillsig.bundle` | Where verify expects the bundle |
 | `~/.skillsig/lock.yaml` | yaml | auto | Per-`skill_id` baseline used for cross-version drift (m3) |
@@ -202,13 +203,23 @@ verify-skills:
 ```
 
 `--ci` makes any `UNSIGNED` / `SCOPE-DRIFTED` row a hard fail. Combine with
-`--no-color` to get diffable plain-text output your CI provider can store.
+`--no-color` to get diffable plain-text output your CI provider can store. When
+you need to branch on the result, use `--json` for structured output:
+
+```bash
+# top-level .drift is true whenever any row is UNSIGNED / SCOPE-DRIFTED
+skillsig verify --json ./skills/ | jq -e '.drift == false'
+```
+
+`verify --json` carries a per-skill array, a summary tally, and a top-level
+`drift` boolean (same semantics as `--ci`); `diff --json` carries an
+`escalation` boolean plus the offending grants.
 
 ## Roadmap
 
 - [x] **m1** — manifest schema + parser + `skillsig verify` 3-color table + jqwik fixture
 - [x] **m2** — `skillsig sign`: ed25519 dev backend + Sigstore keyless OIDC seam (sigstore-go integration)
-- [ ] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` cross-version drift
+- [x] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` cross-version drift (v0.2.0: glob-aware diff + `--json`)
 - [ ] **v0.2** — `skillsig.cloud` hosted mirror + team policy + Slack / Lark / WeChat webhooks
 - [ ] **v0.3** — runtime hook: apply declared scope as a sandbox config before the host CLI loads the Skill
 

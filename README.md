@@ -161,6 +161,7 @@ attestation:
 | --- | --- | --- | --- |
 | `SKILLSIG_HOME` | env | `$HOME/.skillsig` | 锁文件 / 临时凭据存放目录 |
 | `--ci` | flag | `false` | 出现 UNSIGNED 或 SCOPE-DRIFTED 时退出码非零，CI 用 |
+| `--json` | flag | `false` | 输出机器可读的 JSON 报告（`verify` / `diff` 都支持），方便 CI 用 `jq` 解析 |
 | `--no-color` | flag | `false` | 关闭 ANSI 上色，方便 diff |
 | `attestation.sigstore_bundle` | yaml | `./skillsig.bundle` | manifest 指向的签名 bundle 路径 |
 | `~/.skillsig/lock.yaml` | yaml | 自动 | 每个 `skill_id` 上一次 TRUSTED 时的范围基线（m3） |
@@ -187,13 +188,21 @@ verify-skills:
 ```
 
 `--ci` 让任何一行 `UNSIGNED` 或 `SCOPE-DRIFTED` 都直接 fail。配合 `--no-color`
-就能拿到稳定 diff 的纯文本输出。
+就能拿到稳定 diff 的纯文本输出。需要在流水线里按结果分支时，用 `--json` 拿结构化输出：
+
+```bash
+# 顶层 .drift 为 true 即代表有 UNSIGNED / SCOPE-DRIFTED 行
+skillsig verify --json ./skills/ | jq -e '.drift == false'
+```
+
+`verify --json` 给出 per-skill 数组、汇总计数和顶层 `drift` 布尔（语义同 `--ci`）；
+`diff --json` 给出 `escalation` 布尔加上越权的具体授权项。
 
 ## 路线图
 
 - [x] **m1** — manifest schema + parser + `skillsig verify` 3-color 表 + jqwik fixture 复现
 - [x] **m2** — `skillsig sign`：ed25519 dev 模式 + Sigstore keyless OIDC 占位（接 sigstore-go）
-- [ ] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` 跨版本漂移
+- [x] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` 跨版本漂移（v0.2.0 修正 glob 感知 + 加 `--json`）
 - [ ] **v0.2** — `skillsig.cloud` 托管镜像 + 团队策略 + 飞书/Slack/微信群 webhook 告警
 - [ ] **v0.3** — runtime hook：在 host CLI 加载 Skill 之前把声明范围当成沙箱配置应用
 
