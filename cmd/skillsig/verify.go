@@ -30,17 +30,20 @@ func newVerifyCmd() *cobra.Command {
 			}
 			ci, _ := cmd.Flags().GetBool("ci")
 			noColor, _ := cmd.Flags().GetBool("no-color")
-			return runVerify(cmd.OutOrStdout(), path, ci, !noColor)
+			asJSON, _ := cmd.Flags().GetBool("json")
+			return runVerify(cmd.OutOrStdout(), path, ci, !noColor, asJSON)
 		},
 	}
 	cmd.Flags().Bool("ci", false, "exit non-zero on UNSIGNED or SCOPE-DRIFTED rows")
 	cmd.Flags().Bool("no-color", false, "disable color output (stable for diffing)")
+	cmd.Flags().Bool("json", false, "emit a machine-readable JSON report instead of the table")
 	return cmd
 }
 
 // runVerify is the testable core. It walks path, evaluates each skill, prints
-// the report, and (optionally) returns ErrCIDrift.
-func runVerify(out io.Writer, path string, ci, allowColor bool) error {
+// the report (table, or JSON when asJSON is set), and (optionally) returns
+// ErrCIDrift.
+func runVerify(out io.Writer, path string, ci, allowColor, asJSON bool) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
@@ -54,6 +57,12 @@ func runVerify(out io.Writer, path string, ci, allowColor bool) error {
 		return fmt.Errorf("verify: scan: %w", err)
 	}
 	if len(dirs) == 0 {
+		if asJSON {
+			if err := report.RenderJSON(out, nil); err != nil {
+				return err
+			}
+			return nil
+		}
 		fmt.Fprintf(out, "no SKILL.md files found under %s\n", path)
 		return nil
 	}
@@ -68,11 +77,17 @@ func runVerify(out io.Writer, path string, ci, allowColor bool) error {
 	}
 
 	results := scope.EvaluateAll(skills)
-	useColor := allowColor && isTTY(out)
-	if err := report.Render(out, results, useColor); err != nil {
-		return err
+	if asJSON {
+		if err := report.RenderJSON(out, results); err != nil {
+			return err
+		}
+	} else {
+		useColor := allowColor && isTTY(out)
+		if err := report.Render(out, results, useColor); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, report.Summary(results))
 	}
-	fmt.Fprintln(out, report.Summary(results))
 
 	if ci {
 		for _, r := range results {

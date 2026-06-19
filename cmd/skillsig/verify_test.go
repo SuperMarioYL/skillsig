@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -26,11 +27,11 @@ func testdataRoot(t *testing.T) string {
 func TestParseFixtures_FrontmatterAndManifest(t *testing.T) {
 	root := testdataRoot(t)
 	cases := []struct {
-		name           string
-		dir            string
-		wantTool       string
-		wantManifest   bool
-		wantSkillID    string
+		name            string
+		dir             string
+		wantTool        string
+		wantManifest    bool
+		wantSkillID     string
 		wantManifestSrc string
 	}{
 		{"safe-skill", "safe-skill", "Read", true, "skillsig-examples/safe-skill", "sidecar"},
@@ -149,7 +150,7 @@ func TestReport_Render_PlainTextContainsAllVerdicts(t *testing.T) {
 func TestRunVerify_CIExitsOnDrift(t *testing.T) {
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	err := runVerify(&buf, root, true, false)
+	err := runVerify(&buf, root, true, false, false)
 	if !errors.Is(err, ErrCIDrift) {
 		t.Fatalf("expected ErrCIDrift, got %v", err)
 	}
@@ -158,11 +159,47 @@ func TestRunVerify_CIExitsOnDrift(t *testing.T) {
 func TestRunVerify_NonCIIsZeroEvenWithDrift(t *testing.T) {
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	if err := runVerify(&buf, root, false, false); err != nil {
+	if err := runVerify(&buf, root, false, false, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "SCOPE-DRIFTED") {
 		t.Errorf("output should still report drift; got:\n%s", buf.String())
+	}
+}
+
+// TestRunVerify_JSONOutput checks the new --json mode: the output parses as a
+// single JSON object whose summary tallies match the three fixtures and whose
+// top-level drift flag is true (one unsigned + one scope-drifted row).
+func TestRunVerify_JSONOutput(t *testing.T) {
+	root := testdataRoot(t)
+	var buf bytes.Buffer
+	if err := runVerify(&buf, root, false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var got struct {
+		Skills []struct {
+			SkillID string `json:"skill_id"`
+			Verdict string `json:"verdict"`
+		} `json:"skills"`
+		Summary struct {
+			Total      int `json:"total"`
+			Trusted    int `json:"trusted"`
+			Unsigned   int `json:"unsigned"`
+			ScopeDrift int `json:"scope_drifted"`
+		} `json:"summary"`
+		Drift bool `json:"drift"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if got.Summary.Total != 3 || got.Summary.Trusted != 1 || got.Summary.Unsigned != 1 || got.Summary.ScopeDrift != 1 {
+		t.Errorf("summary tally off: %+v", got.Summary)
+	}
+	if !got.Drift {
+		t.Errorf("drift flag should be true with an unsigned + scope-drifted row")
+	}
+	if len(got.Skills) != 3 {
+		t.Errorf("expected 3 skill rows, got %d", len(got.Skills))
 	}
 }
 

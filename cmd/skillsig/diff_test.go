@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -45,7 +46,7 @@ func TestRunDiff_CatchesAddedRmRf(t *testing.T) {
 	newDir := writeSkillDir(t, []string{"Read", "Edit", "Bash(rm -rf*)"})
 
 	var buf bytes.Buffer
-	err := runDiff(&buf, oldDir, newDir)
+	err := runDiff(&buf, oldDir, newDir, false)
 	if !errors.Is(err, ErrScopeEscalation) {
 		t.Fatalf("expected ErrScopeEscalation, got %v", err)
 	}
@@ -66,10 +67,56 @@ func TestRunDiff_UnchangedReportsNoEscalation(t *testing.T) {
 	newDir := writeSkillDir(t, tools)
 
 	var buf bytes.Buffer
-	if err := runDiff(&buf, oldDir, newDir); err != nil {
+	if err := runDiff(&buf, oldDir, newDir, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "no scope escalation") {
 		t.Errorf("output should report no escalation; got:\n%s", buf.String())
+	}
+}
+
+// TestRunDiff_WildcardRefinementIsNotEscalation is the bug-fix regression: a
+// new version that TIGHTENS an existing wildcard grant (Bash(git status*) →
+// Bash(git status -s)) stays within the old declared scope and must NOT be
+// flagged as an escalation. Before the fix, scopeGrowth used literal string
+// set-difference and reported this refinement as growth — a false positive
+// that would break CI for authors narrowing their globs.
+func TestRunDiff_WildcardRefinementIsNotEscalation(t *testing.T) {
+	oldDir := writeSkillDir(t, []string{"Read", "Bash(git status*)"})
+	newDir := writeSkillDir(t, []string{"Read", "Bash(git status -s)"})
+
+	var buf bytes.Buffer
+	if err := runDiff(&buf, oldDir, newDir, false); err != nil {
+		t.Fatalf("refinement under an existing wildcard should not escalate, got: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "no scope escalation") {
+		t.Errorf("output should report no escalation; got:\n%s", buf.String())
+	}
+}
+
+// TestRunDiff_JSONReportsEscalation exercises the new --json output: a genuine
+// escalation produces a JSON object with escalation=true, the offending grant,
+// and still returns ErrScopeEscalation for the exit code.
+func TestRunDiff_JSONReportsEscalation(t *testing.T) {
+	oldDir := writeSkillDir(t, []string{"Read", "Edit"})
+	newDir := writeSkillDir(t, []string{"Read", "Edit", "Bash(rm -rf*)"})
+
+	var buf bytes.Buffer
+	err := runDiff(&buf, oldDir, newDir, true)
+	if !errors.Is(err, ErrScopeEscalation) {
+		t.Fatalf("expected ErrScopeEscalation, got %v", err)
+	}
+	var got struct {
+		Escalation  bool     `json:"escalation"`
+		Escalations []string `json:"escalations"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if !got.Escalation {
+		t.Errorf("escalation flag should be true; got %+v", got)
+	}
+	if len(got.Escalations) == 0 || !strings.Contains(strings.Join(got.Escalations, " "), "rm -rf") {
+		t.Errorf("escalations should name the offending grant; got %+v", got)
 	}
 }
