@@ -58,6 +58,27 @@ skillsig answers all three: a YAML manifest declaring the four-axis scope,
 Sigstore keyless signing, and a `~/.skillsig/lock.yaml` baseline so drift
 across versions fails CI even when the signature is valid.
 
+## <img src="https://api.iconify.design/tabler:topology-star-3.svg?color=%23DC2626&width=24" height="22" align="absmiddle" alt=""> Architecture
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
+    <img src="./assets/atlas-light.svg" width="880" alt="Skill folders (SKILL.md allowed-tools plus SKILLSIG.yaml manifest) are parsed, the scope engine diffs declared scope against actual grants and the lockfile baseline, the verifier checks the Sigstore or ed25519 bundle, and the report prints a TRUSTED / UNSIGNED / SCOPE-DRIFTED table that gates CI">
+  </picture>
+</p>
+
+Each skill folder carries two things: a `SKILL.md` whose frontmatter holds the
+*actual* `allowed-tools` grants, and a `SKILLSIG.yaml` manifest *declaring* the
+intended four-axis scope (model · tools · fs_write · network_egress). The
+**parser** canonicalizes both, the **scope engine** diffs the declared
+allowlist against the actual grants (with `Tool(prefix*)` glob semantics) and
+against the `~/.skillsig/lock.yaml` baseline to catch cross-version drift, and
+the **verifier** checks the ed25519 or Sigstore-keyless bundle. The whole pass
+is local-only — no network egress — and ends in a 3-color **report** that
+returns a non-zero exit under `--ci` so a widened scope fails the build, not the
+human after the fact.
+
 ## Quickstart (60 seconds)
 
 ```bash
@@ -89,17 +110,16 @@ scope-mismatch                              UNSIGNED       no skillsig manifest 
 ```
 </details>
 
-## Demo
+## <img src="https://api.iconify.design/tabler:photo.svg?color=%23DC2626&width=24" height="22" align="absmiddle" alt=""> Demo
 
-> 📼 Recording in progress — see [`assets/README.md`](./assets/README.md) for how
-> to regenerate via [vhs](https://github.com/charmbracelet/vhs).
-> Tape script: [`assets/demo.tape`](./assets/demo.tape) · target duration 30 s.
+![skillsig demo — verify, init, sign, diff](./assets/demo.gif)
 
-Once published, this README slot embeds:
-
-```markdown
-[![asciicast](https://asciinema.org/a/PLACEHOLDER.svg)](https://asciinema.org/a/PLACEHOLDER)
-```
+The cast walks the happy path: `verify` the bundled fixtures (jqwik flagged
+`SCOPE-DRIFTED`), `init` + `sign` a skill with the dev ed25519 backend, then
+`diff` two versions to catch a silently-added `Bash(rm -rf …)` grant. The GIF is
+rendered in CI from [`docs/demo.tape`](./docs/demo.tape) via
+[vhs](https://github.com/charmbracelet/vhs) — regenerate locally with
+`vhs docs/demo.tape`.
 
 ## The core primitive: the skillsig manifest
 
