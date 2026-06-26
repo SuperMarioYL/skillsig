@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,7 +151,7 @@ func TestReport_Render_PlainTextContainsAllVerdicts(t *testing.T) {
 func TestRunVerify_CIExitsOnDrift(t *testing.T) {
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	err := runVerify(&buf, root, true, false, false)
+	err := runVerify(&buf, root, true, false, false, "")
 	if !errors.Is(err, ErrCIDrift) {
 		t.Fatalf("expected ErrCIDrift, got %v", err)
 	}
@@ -159,11 +160,54 @@ func TestRunVerify_CIExitsOnDrift(t *testing.T) {
 func TestRunVerify_NonCIIsZeroEvenWithDrift(t *testing.T) {
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	if err := runVerify(&buf, root, false, false, false); err != nil {
+	if err := runVerify(&buf, root, false, false, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "SCOPE-DRIFTED") {
 		t.Errorf("output should still report drift; got:\n%s", buf.String())
+	}
+}
+
+// TestRunVerify_SARIFFile checks the m4 --sarif mode: verify writes a valid
+// SARIF 2.1.0 log to the given path, with a result per non-TRUSTED skill and a
+// level=error for the scope-drifted fixture.
+func TestRunVerify_SARIFFile(t *testing.T) {
+	root := testdataRoot(t)
+	out := filepath.Join(t.TempDir(), "skillsig.sarif")
+	var buf bytes.Buffer
+	if err := runVerify(&buf, root, false, false, false, out); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read sarif: %v", err)
+	}
+	var got struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+				Level  string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("sarif is not valid JSON: %v\n%s", err, raw)
+	}
+	if got.Version != "2.1.0" {
+		t.Errorf("sarif version = %q, want 2.1.0", got.Version)
+	}
+	if len(got.Runs) != 1 {
+		t.Fatalf("want exactly 1 run, got %d", len(got.Runs))
+	}
+	var sawDriftError bool
+	for _, r := range got.Runs[0].Results {
+		if r.RuleID == "skillsig/scope-drifted" && r.Level == "error" {
+			sawDriftError = true
+		}
+	}
+	if !sawDriftError {
+		t.Errorf("expected a scope-drifted result at level=error; results=%+v", got.Runs[0].Results)
 	}
 }
 
@@ -173,7 +217,7 @@ func TestRunVerify_NonCIIsZeroEvenWithDrift(t *testing.T) {
 func TestRunVerify_JSONOutput(t *testing.T) {
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	if err := runVerify(&buf, root, false, false, true); err != nil {
+	if err := runVerify(&buf, root, false, false, true, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var got struct {

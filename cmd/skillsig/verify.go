@@ -31,19 +31,21 @@ func newVerifyCmd() *cobra.Command {
 			ci, _ := cmd.Flags().GetBool("ci")
 			noColor, _ := cmd.Flags().GetBool("no-color")
 			asJSON, _ := cmd.Flags().GetBool("json")
-			return runVerify(cmd.OutOrStdout(), path, ci, !noColor, asJSON)
+			sarifPath, _ := cmd.Flags().GetString("sarif")
+			return runVerify(cmd.OutOrStdout(), path, ci, !noColor, asJSON, sarifPath)
 		},
 	}
 	cmd.Flags().Bool("ci", false, "exit non-zero on UNSIGNED or SCOPE-DRIFTED rows")
 	cmd.Flags().Bool("no-color", false, "disable color output (stable for diffing)")
 	cmd.Flags().Bool("json", false, "emit a machine-readable JSON report instead of the table")
+	cmd.Flags().String("sarif", "", "also write a SARIF 2.1.0 report to this path (\"-\" for stdout) for GitHub code-scanning")
 	return cmd
 }
 
 // runVerify is the testable core. It walks path, evaluates each skill, prints
-// the report (table, or JSON when asJSON is set), and (optionally) returns
-// ErrCIDrift.
-func runVerify(out io.Writer, path string, ci, allowColor, asJSON bool) error {
+// the report (table, or JSON when asJSON is set), optionally writes a SARIF
+// report (when sarifPath is non-empty), and (optionally) returns ErrCIDrift.
+func runVerify(out io.Writer, path string, ci, allowColor, asJSON bool, sarifPath string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
@@ -61,9 +63,16 @@ func runVerify(out io.Writer, path string, ci, allowColor, asJSON bool) error {
 			if err := report.RenderJSON(out, nil); err != nil {
 				return err
 			}
-			return nil
+		} else {
+			fmt.Fprintf(out, "no SKILL.md files found under %s\n", path)
 		}
-		fmt.Fprintf(out, "no SKILL.md files found under %s\n", path)
+		// An empty tree still gets an empty-but-valid SARIF run when requested,
+		// so a CI step that always uploads has a file to upload.
+		if sarifPath != "" {
+			if err := writeSARIF(out, sarifPath, nil); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -89,12 +98,35 @@ func runVerify(out io.Writer, path string, ci, allowColor, asJSON bool) error {
 		fmt.Fprintln(out, report.Summary(results))
 	}
 
+	if sarifPath != "" {
+		if err := writeSARIF(out, sarifPath, results); err != nil {
+			return err
+		}
+	}
+
 	if ci {
 		for _, r := range results {
 			if r.Verdict == scope.VerdictUnsigned || r.Verdict == scope.VerdictScopeDrifted {
 				return ErrCIDrift
 			}
 		}
+	}
+	return nil
+}
+
+// writeSARIF emits the SARIF 2.1.0 report to sarifPath, or to out when sarifPath
+// is "-". A file target is created/truncated; its directory is assumed to exist.
+func writeSARIF(out io.Writer, sarifPath string, results []scope.Result) error {
+	if sarifPath == "-" {
+		return report.RenderSARIF(out, results)
+	}
+	f, err := os.Create(sarifPath)
+	if err != nil {
+		return fmt.Errorf("verify: sarif: %w", err)
+	}
+	defer f.Close()
+	if err := report.RenderSARIF(f, results); err != nil {
+		return fmt.Errorf("verify: sarif: %w", err)
 	}
 	return nil
 }

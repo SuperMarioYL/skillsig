@@ -197,10 +197,10 @@ func scopeGrowth(prev, curr manifest.Declares) []string {
 	if added := addedTools(prev.Tools, curr.Tools); len(added) > 0 {
 		out = append(out, "tools+ ["+strings.Join(added, ", ")+"]")
 	}
-	if added := addedPaths(prev.FSWrite, curr.FSWrite); len(added) > 0 {
+	if added := addedFSPaths(prev.FSWrite, curr.FSWrite); len(added) > 0 {
 		out = append(out, "fs_write+ ["+strings.Join(added, ", ")+"]")
 	}
-	if added := addedPaths(prev.NetworkEgress, curr.NetworkEgress); len(added) > 0 {
+	if added := addedHosts(prev.NetworkEgress, curr.NetworkEgress); len(added) > 0 {
 		out = append(out, "network_egress+ ["+strings.Join(added, ", ")+"]")
 	}
 	return out
@@ -228,12 +228,25 @@ func addedTools(prev, curr []string) []string {
 	return out
 }
 
-// addedPaths returns every fs_write / network_egress entry in curr that is NOT
-// already covered by some entry in prev, treating a trailing "**" or "*" in a
-// prev entry as a glob. A new path that falls under an existing prev glob is a
-// refinement (narrowing), not growth, so it is not reported. curr's order is
-// preserved.
-func addedPaths(prev, curr []string) []string {
+// addedFSPaths returns every fs_write entry in curr that is NOT already covered
+// by some entry in prev, using the boundary-aware coverage in glob.go ('/'
+// segment boundary, single-"*" vs "**" semantics, ".." rejected). A new path
+// genuinely narrower than an existing prev glob is a refinement, not growth, so
+// it is not reported; a sibling-prefix path ("/ws/foobar-evil" under "/ws/foo*")
+// or a deeper path under a single-"*" glob IS reported. curr's order is preserved.
+func addedFSPaths(prev, curr []string) []string {
+	return addedPathsWith(prev, curr, fsPathCovered)
+}
+
+// addedHosts returns every network_egress entry in curr NOT already covered by
+// prev, using the boundary-aware host coverage ('.' segment boundary) so a
+// look-alike host ("api.github.com.attacker.net" under a declared
+// "api.github.com*") is reported as growth instead of silently swallowed.
+func addedHosts(prev, curr []string) []string {
+	return addedPathsWith(prev, curr, hostCovered)
+}
+
+func addedPathsWith(prev, curr []string, covered func([]string, string) bool) []string {
 	if len(curr) == 0 {
 		return nil
 	}
@@ -243,45 +256,9 @@ func addedPaths(prev, curr []string) []string {
 		if c == "" {
 			continue
 		}
-		if !pathCovered(prev, c) {
+		if !covered(prev, c) {
 			out = append(out, c)
 		}
 	}
 	return out
-}
-
-// pathCovered reports whether path is covered by any entry in declared. An
-// entry covers path when they are equal, or when the entry ends in "*" / "**"
-// and path shares the entry's literal prefix. "**" and "*" are treated the
-// same here (prefix match) because fs_write / network_egress globs are coarse
-// scope declarations, not a full path matcher.
-func pathCovered(declared []string, path string) bool {
-	for _, d := range declared {
-		d = strings.TrimSpace(d)
-		if d == "" {
-			continue
-		}
-		if d == path {
-			return true
-		}
-		prefix, isGlob := globPrefix(d)
-		if isGlob && strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// globPrefix strips a trailing "**" or "*" off a path glob and reports whether
-// one was present. "${WORKSPACE}/**" → ("${WORKSPACE}/", true);
-// "~/.claude/config" → ("~/.claude/config", false).
-func globPrefix(s string) (prefix string, isGlob bool) {
-	switch {
-	case strings.HasSuffix(s, "**"):
-		return strings.TrimSuffix(s, "**"), true
-	case strings.HasSuffix(s, "*"):
-		return strings.TrimSuffix(s, "*"), true
-	default:
-		return s, false
-	}
 }

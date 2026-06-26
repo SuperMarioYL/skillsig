@@ -177,6 +177,7 @@ matches Claude Code's grant grammar) becomes the reason for `SCOPE-DRIFTED`
 | `SKILLSIG_HOME` | env | `$HOME/.skillsig` | Where the lockfile and ephemeral credentials live |
 | `--ci` | flag | `false` | Exit non-zero on UNSIGNED or SCOPE-DRIFTED |
 | `--json` | flag | `false` | Emit a machine-readable JSON report (`verify` / `diff`) for `jq` in CI |
+| `--sarif` | string | `""` | Also write a SARIF 2.1.0 report to this path (`-` for stdout) so GitHub code-scanning annotates drift inline on the PR |
 | `--no-color` | flag | `false` | Strip ANSI escapes (diffable output) |
 | `attestation.sigstore_bundle` | yaml | `./skillsig.bundle` | Where verify expects the bundle |
 | `~/.skillsig/lock.yaml` | yaml | auto | Per-`skill_id` baseline used for cross-version drift (m3) |
@@ -215,13 +216,27 @@ skillsig verify --json ./skills/ | jq -e '.drift == false'
 `drift` boolean (same semantics as `--ci`); `diff --json` carries an
 `escalation` boolean plus the offending grants.
 
+To surface drift directly in the PR's code view, use `--sarif` to emit a SARIF
+2.1.0 report and hand it to GitHub code-scanning's `upload-sarif` action. Each
+`SCOPE-DRIFTED` is an error, each `UNSIGNED` a warning, and a clean PR produces
+no annotations:
+
+```yaml
+- run: skillsig verify --ci --sarif skillsig.sarif ./skills/
+  continue-on-error: true   # let the upload step always run
+- uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: skillsig.sarif
+```
+
 ## Roadmap
 
 - [x] **m1** — manifest schema + parser + `skillsig verify` 3-color table + jqwik fixture
 - [x] **m2** — `skillsig sign`: ed25519 dev backend + Sigstore keyless OIDC seam (sigstore-go integration)
 - [x] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` cross-version drift (v0.2.0: glob-aware diff + `--json`)
-- [ ] **v0.2** — `skillsig.cloud` hosted mirror + team policy + Slack / Lark / WeChat webhooks
-- [ ] **v0.3** — runtime hook: apply declared scope as a sandbox config before the host CLI loads the Skill
+- [x] **v0.3.0 hardening** — glob coverage is now segment-boundary aware (closes the `api.github.com*` → `api.github.com.attacker.net` confusion and the `*` / `**` collapse), plus `verify --sarif` so GitHub code-scanning annotates drift inline on the PR
+- [ ] **hosted tier** — `skillsig.cloud` hosted mirror + team policy + Slack / Lark / WeChat webhooks
+- [ ] **runtime hook** — apply declared scope as a sandbox config before the host CLI loads the Skill
 
 For per-release detail see [`CHANGELOG.md`](./CHANGELOG.md). After cloning,
 recommend setting GitHub topics for discoverability:

@@ -6,8 +6,41 @@ All notable changes to skillsig are tracked here. Format roughly follows
 
 ## [Unreleased]
 
-Nothing yet — the v0.2 hosted-mirror tier (`skillsig.cloud` + team policy +
+Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
+
+## [0.3.0] — 2026-06-27
+
+Hardens the cross-version drift detector against two glob-coverage holes the
+v0.2.0 "glob-aware on every axis" change introduced, and adds SARIF output so
+GitHub code-scanning annotates drift inline on the pull request.
+
+### Security / Fixed
+- **Prefix-confusion in drift glob coverage (high).** The v0.2.0 coverage used a
+  raw `strings.HasPrefix` after stripping a trailing `*`/`**`, with no segment
+  boundary. A declared `network_egress` glob `api.github.com*` therefore reported
+  the newly added host `api.github.com.attacker.net` as already covered, and an
+  `fs_write` glob `/workspace/foo*` covered `/workspace/foobar-evil` — so a
+  re-signed skill that broadened its grants was **not** flagged SCOPE-DRIFTED on
+  either `diff` or lock-aware `verify`. Coverage is now segment-boundary aware:
+  a glob prefix only covers a candidate when the remainder is empty or begins at
+  a path/host separator (`/` for paths, `.` for hosts).
+- **`*` vs `**` collapse (medium).** A single trailing `*` and `**` were treated
+  identically, so `${WORKSPACE}/*` (intended: direct children) silently covered
+  the deep path `${WORKSPACE}/a/b/secret` and even a `..` traversal. A single `*`
+  now matches within one segment only, `**` is recursive, and a `..` remainder is
+  always reported as growth.
+- Both fixes are factored into a new boundary-aware `internal/scope/glob.go`
+  helper shared by the `verify` and `diff` paths so they can never disagree on
+  what "broader" means. New `glob_test.go` covers the look-alike host, the
+  sibling-prefix path, the deep single-`*` path, traversal, and a true refinement.
+
+### Added
+- `verify --ci --sarif <out.sarif>` (`-` for stdout): emit a SARIF 2.1.0 report
+  with one result per SCOPE-DRIFTED (level=error) / UNSIGNED (level=warning)
+  skill, so a GitHub Actions `github/codeql-action/upload-sarif` step renders the
+  drift as an inline annotation on the offending pull request. Plain `--json`
+  (v0.2.0) is unchanged. Backed by `report.RenderSARIF`.
 
 ## [0.2.0] — 2026-06-19
 
