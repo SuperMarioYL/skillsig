@@ -107,11 +107,11 @@ func splitFrontmatter(raw []byte) ([]byte, []byte, error) {
 	scanner := bufio.NewScanner(strings.NewReader(s))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var (
-		fmLines   []string
-		body      strings.Builder
-		seenOpen  bool
-		inFM      bool
-		closedFM  bool
+		fmLines  []string
+		body     strings.Builder
+		seenOpen bool
+		inFM     bool
+		closedFM bool
 	)
 	for scanner.Scan() {
 		line := scanner.Text()

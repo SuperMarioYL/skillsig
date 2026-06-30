@@ -69,10 +69,10 @@ type Signer interface {
 // independently of the manifest. Keeping it JSON sidesteps YAML's whitespace
 // pitfalls for a binary-ish payload.
 type Bundle struct {
-	MediaType            string                `json:"mediaType"`
-	MessageSignature     MessageSignature      `json:"messageSignature"`
-	VerificationMaterial VerificationMaterial  `json:"verificationMaterial"`
-	CreatedAt            time.Time             `json:"createdAt"`
+	MediaType            string               `json:"mediaType"`
+	MessageSignature     MessageSignature     `json:"messageSignature"`
+	VerificationMaterial VerificationMaterial `json:"verificationMaterial"`
+	CreatedAt            time.Time            `json:"createdAt"`
 }
 
 // MessageSignature pairs a digest with the signature over that digest. The
@@ -96,10 +96,10 @@ type Digest struct {
 // backend; the Certificate / RekorEntry fields are populated by keyless
 // backends. A given bundle uses exactly one of (PublicKey, Certificate).
 type VerificationMaterial struct {
-	PublicKey   string    `json:"publicKey,omitempty"`   // base64 raw key bytes
-	Certificate string    `json:"certificate,omitempty"` // PEM, when keyless
-	RekorEntry  string    `json:"rekorEntry,omitempty"`  // transparency log pointer, when keyless
-	Identity    Identity  `json:"identity"`
+	PublicKey   string   `json:"publicKey,omitempty"`   // base64 raw key bytes
+	Certificate string   `json:"certificate,omitempty"` // PEM, when keyless
+	RekorEntry  string   `json:"rekorEntry,omitempty"`  // transparency log pointer, when keyless
+	Identity    Identity `json:"identity"`
 }
 
 // Identity is the (issuer, subject) pair extracted from the OIDC token used

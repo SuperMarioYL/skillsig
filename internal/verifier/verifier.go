@@ -31,9 +31,9 @@ import (
 type Verdict string
 
 const (
-	VerdictSigned       Verdict = "SIGNED"
-	VerdictNoBundle     Verdict = "NO-BUNDLE"
-	VerdictBadSignature Verdict = "BAD-SIGNATURE"
+	VerdictSigned         Verdict = "SIGNED"
+	VerdictNoBundle       Verdict = "NO-BUNDLE"
+	VerdictBadSignature   Verdict = "BAD-SIGNATURE"
 	VerdictKeylessPending Verdict = "KEYLESS-PENDING"
 )
 
