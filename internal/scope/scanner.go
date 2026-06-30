@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -135,9 +136,77 @@ func (s *Scanner) loadLock() (*LockFile, error) {
 	return s.lock, nil
 }
 
-// Save writes the lock file back to disk. Called by `verify --trust` (a future
-// flag) and by tests; the verify command at v0.1 is read-only against the
-// lock to keep first-run side effects predictable.
+// ScanAndTrust walks root exactly like Scan, then records every TRUSTED skill's
+// current declared scope into the lock file as the baseline future verify runs
+// compare against. It is what `verify --trust` calls: the first time you trust a
+// corpus it seeds ~/.skillsig/lock.yaml so a later re-signed skill that broadens
+// its grants is flagged SCOPE-DRIFTED on the next plain `verify` (the m3 / lock
+// drift gate). A skill that is already SCOPE-DRIFTED or UNSIGNED is NOT recorded —
+// you only ever pin scopes you actually trust. Existing entries for skills not in
+// this scan are preserved (additive trust), and re-trusting a skill refreshes its
+// snapshot. Returns the post-write results so the caller can still print a table.
+func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
+	if s.LockPath == "" {
+		return nil, errors.New("scanner: empty LockPath (cannot --trust without a lock location)")
+	}
+	dirs, err := manifest.FindSkillDirs(root)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(dirs)
+
+	skills := make([]*manifest.Skill, 0, len(dirs))
+	for _, d := range dirs {
+		sk, err := manifest.ParseSkill(d)
+		if err != nil {
+			return nil, err
+		}
+		skills = append(skills, sk)
+	}
+	results := EvaluateAll(skills)
+
+	lock, err := s.loadLock()
+	if err != nil {
+		return nil, fmt.Errorf("load lock: %w", err)
+	}
+	if lock == nil {
+		lock = &LockFile{Version: 1, Entries: map[string]LockEntry{}}
+	}
+	if lock.Entries == nil {
+		lock.Entries = map[string]LockEntry{}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i, r := range results {
+		if r.Verdict != VerdictTrusted {
+			continue
+		}
+		sk := skills[i]
+		if sk.Manifest == nil || sk.Manifest.SkillID == "" {
+			continue
+		}
+		lock.Entries[sk.Manifest.SkillID] = LockEntry{
+			SkillID:  sk.Manifest.SkillID,
+			Version:  sk.Manifest.Version,
+			Declares: sk.Manifest.Declares,
+			SeenAt:   now,
+		}
+	}
+	// Keep the in-memory copy consistent with what we persist so a subsequent
+	// Scan on the same Scanner sees the refreshed baseline.
+	s.mu.Lock()
+	s.lock = lock
+	s.mu.Unlock()
+
+	if err := s.Save(lock); err != nil {
+		return nil, fmt.Errorf("save lock: %w", err)
+	}
+	return results, nil
+}
+
+// Save writes the lock file back to disk. Called by `verify --trust` (via
+// ScanAndTrust) and by tests. A plain `verify` stays read-only against the lock
+// so the first-run side effects are predictable and opt-in.
 func (s *Scanner) Save(lock *LockFile) error {
 	if s.LockPath == "" {
 		return errors.New("scanner: empty LockPath")

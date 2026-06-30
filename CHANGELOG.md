@@ -9,6 +9,46 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.4.0] — 2026-06-30
+
+Closes the gap that let the product's headline check sit unreachable: the
+cross-version (lock) drift detector now runs inside `verify` — and therefore
+inside `verify --ci` and the SARIF annotations — not only inside `diff`. Plus a
+SARIF stdout fix so `--sarif -` is machine-readable.
+
+### Security / Fixed
+- **`verify` skipped the lock-aware drift path (high).** `verify` called the
+  in-version `scope.EvaluateAll` directly and never constructed a
+  `scope.Scanner`, so a re-signed skill that quietly broadened its `fs_write` /
+  `network_egress` / `tools` (while keeping its `allowed-tools` inside the
+  declared set) passed `verify --ci` silently — the exact cross-version jqwik
+  vector skillsig exists to catch. The v0.3.0 boundary-aware glob fixes lived in
+  the lock path, so they only took effect in `diff`, never at the CI gate or in
+  the SARIF output. `verify` now goes through `scope.DefaultScanner().Scan`,
+  which applies the lock-drift comparison, so a broadened re-signed skill is
+  flagged `SCOPE-DRIFTED` on a plain `verify` and fails `verify --ci`.
+- **`--sarif -` produced unparseable stdout (medium).** With the SARIF target set
+  to `-` (stdout), `verify` wrote the human table (or, with `--json`, the JSON
+  report) to stdout and then appended the SARIF document to the same stream — so
+  stdout was neither a valid SARIF file nor a valid `--json` object, and
+  `--json --sarif -` joined two root JSON objects back-to-back. SARIF is now the
+  **sole** stdout artifact in `--sarif -` mode (the table/JSON is suppressed),
+  so `github/codeql-action/upload-sarif` reading from stdout gets one valid
+  document.
+
+### Added
+- **`verify --trust`** seeds (or refreshes) `~/.skillsig/lock.yaml` from the
+  currently-TRUSTED corpus, so the lock has a baseline for the next run to
+  compare against. Honors `$SKILLSIG_HOME` for hermetic/CI use. A skill that is
+  SCOPE-DRIFTED or UNSIGNED is never recorded — you only pin scopes you trust.
+
+### Tests
+- Lock-drift through `verify`: trust a corpus, re-sign one skill with a broadened
+  grant, assert plain `verify` reports `SCOPE-DRIFTED` and `verify --ci` exits
+  non-zero; plus the inverse (no baseline ⇒ stays TRUSTED).
+- SARIF stdout: `--sarif -` and `--json --sarif -` each emit exactly one valid
+  JSON/SARIF document with no concatenated second object and no table header.
+
 ## [0.3.0] — 2026-06-27
 
 Hardens the cross-version drift detector against two glob-coverage holes the

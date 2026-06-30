@@ -175,12 +175,13 @@ matches Claude Code's grant grammar) becomes the reason for `SCOPE-DRIFTED`
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `SKILLSIG_HOME` | env | `$HOME/.skillsig` | Where the lockfile and ephemeral credentials live |
-| `--ci` | flag | `false` | Exit non-zero on UNSIGNED or SCOPE-DRIFTED |
+| `--ci` | flag | `false` | Exit non-zero on UNSIGNED or SCOPE-DRIFTED (including cross-version lock drift) |
+| `--trust` | flag | `false` | Record every currently-TRUSTED skill's scope into `~/.skillsig/lock.yaml` as the drift baseline (run once when you first trust a corpus) |
 | `--json` | flag | `false` | Emit a machine-readable JSON report (`verify` / `diff`) for `jq` in CI |
-| `--sarif` | string | `""` | Also write a SARIF 2.1.0 report to this path (`-` for stdout) so GitHub code-scanning annotates drift inline on the PR |
+| `--sarif` | string | `""` | Also write a SARIF 2.1.0 report to this path (`-` for stdout, where SARIF is the *sole* stdout document) so GitHub code-scanning annotates drift inline on the PR |
 | `--no-color` | flag | `false` | Strip ANSI escapes (diffable output) |
 | `attestation.sigstore_bundle` | yaml | `./skillsig.bundle` | Where verify expects the bundle |
-| `~/.skillsig/lock.yaml` | yaml | auto | Per-`skill_id` baseline used for cross-version drift (m3) |
+| `~/.skillsig/lock.yaml` | yaml | auto | Per-`skill_id` baseline (written by `--trust`); `verify` / `verify --ci` compare against it to catch cross-version drift |
 
 ## Wire into CI
 
@@ -203,9 +204,17 @@ verify-skills:
     - skillsig verify --ci ./skills/
 ```
 
-`--ci` makes any `UNSIGNED` / `SCOPE-DRIFTED` row a hard fail. Combine with
-`--no-color` to get diffable plain-text output your CI provider can store. When
-you need to branch on the result, use `--json` for structured output:
+Run `skillsig verify --trust ./skills/` once from a known-good state to record
+the current scopes into the lockfile as the baseline. After that, every
+`verify --ci` compares each skill's current manifest against that baseline — a
+skill that quietly widens its `fs_write` / `network_egress` / `tools` on a later
+version (even while its SKILL.md `allowed-tools` stay inside the declared set) is
+flagged `SCOPE-DRIFTED` and fails the build, with no separate `diff` step needed.
+
+`--ci` makes any `UNSIGNED` / `SCOPE-DRIFTED` row (including the cross-version
+lock drift above) a hard fail. Combine with `--no-color` to get diffable
+plain-text output your CI provider can store. When you need to branch on the
+result, use `--json` for structured output:
 
 ```bash
 # top-level .drift is true whenever any row is UNSIGNED / SCOPE-DRIFTED
@@ -235,6 +244,7 @@ no annotations:
 - [x] **m2** — `skillsig sign`: ed25519 dev backend + Sigstore keyless OIDC seam (sigstore-go integration)
 - [x] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` cross-version drift (v0.2.0: glob-aware diff + `--json`)
 - [x] **v0.3.0 hardening** — glob coverage is now segment-boundary aware (closes the `api.github.com*` → `api.github.com.attacker.net` confusion and the `*` / `**` collapse), plus `verify --sarif` so GitHub code-scanning annotates drift inline on the PR
+- [x] **v0.4.0** — cross-version lock drift now runs inside `verify --ci` (and the SARIF annotations), not only `diff`: `verify` previously called the in-version check and never built a Scanner, so the lock comparison was unreachable from the CI gate. `verify` now goes through the lock-aware scanner, with a new `verify --trust` to seed the baseline; also fixes `--sarif -` concatenating the table / JSON with the SARIF document on stdout (SARIF is now the sole stdout artifact)
 - [ ] **hosted tier** — `skillsig.cloud` hosted mirror + team policy + Slack / Lark / WeChat webhooks
 - [ ] **runtime hook** — apply declared scope as a sandbox config before the host CLI loads the Skill
 

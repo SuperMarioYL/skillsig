@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/SuperMarioYL/skillsig/internal/manifest"
 	"github.com/SuperMarioYL/skillsig/internal/report"
 	"github.com/SuperMarioYL/skillsig/internal/scope"
 )
@@ -32,79 +31,122 @@ func newVerifyCmd() *cobra.Command {
 			noColor, _ := cmd.Flags().GetBool("no-color")
 			asJSON, _ := cmd.Flags().GetBool("json")
 			sarifPath, _ := cmd.Flags().GetString("sarif")
-			return runVerify(cmd.OutOrStdout(), path, ci, !noColor, asJSON, sarifPath)
+			trust, _ := cmd.Flags().GetBool("trust")
+			return runVerify(cmd.OutOrStdout(), verifyOpts{
+				path:       path,
+				ci:         ci,
+				allowColor: !noColor,
+				asJSON:     asJSON,
+				sarifPath:  sarifPath,
+				trust:      trust,
+			})
 		},
 	}
 	cmd.Flags().Bool("ci", false, "exit non-zero on UNSIGNED or SCOPE-DRIFTED rows")
 	cmd.Flags().Bool("no-color", false, "disable color output (stable for diffing)")
 	cmd.Flags().Bool("json", false, "emit a machine-readable JSON report instead of the table")
 	cmd.Flags().String("sarif", "", "also write a SARIF 2.1.0 report to this path (\"-\" for stdout) for GitHub code-scanning")
+	cmd.Flags().Bool("trust", false, "record every TRUSTED skill's current scope into the lock as the drift baseline (seed ~/.skillsig/lock.yaml)")
 	return cmd
 }
 
-// runVerify is the testable core. It walks path, evaluates each skill, prints
-// the report (table, or JSON when asJSON is set), optionally writes a SARIF
-// report (when sarifPath is non-empty), and (optionally) returns ErrCIDrift.
-func runVerify(out io.Writer, path string, ci, allowColor, asJSON bool, sarifPath string) error {
-	info, err := os.Stat(path)
+// verifyOpts bundles the verify command's flags so runVerify keeps one stable
+// signature as the lock-aware (--trust) and SARIF modes were layered on. Tests
+// construct it directly.
+type verifyOpts struct {
+	path       string
+	ci         bool
+	allowColor bool
+	asJSON     bool
+	sarifPath  string
+	trust      bool
+}
+
+// runVerify is the testable core. It walks path through the LOCK-AWARE scanner
+// (so a re-signed skill that broadened its grants vs. the recorded baseline is
+// flagged SCOPE-DRIFTED, not just in-version drift), prints the report (table,
+// or JSON when asJSON is set), optionally writes a SARIF report (when sarifPath
+// is non-empty), and (optionally) returns ErrCIDrift.
+//
+// Two correctness fixes vs. the v0.3.0 behaviour:
+//   - verify now goes through scope.DefaultScanner().Scan(path) instead of bare
+//     scope.EvaluateAll, so the cross-version (lock) drift check the product
+//     exists to catch actually runs in `verify --ci` and the SARIF annotations,
+//     not only in `skillsig diff`. With opts.trust set, the corpus's TRUSTED
+//     scopes are first recorded as the baseline (ScanAndTrust).
+//   - when sarifPath is "-" (stdout), SARIF is the SOLE stdout artifact: the
+//     human table / --json object is NOT also written to stdout, so the output
+//     is a single valid SARIF document that github/codeql-action/upload-sarif
+//     (or any JSON parser) can read.
+func runVerify(out io.Writer, opts verifyOpts) error {
+	info, err := os.Stat(opts.path)
 	if err != nil {
 		return fmt.Errorf("verify: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("verify: %s is not a directory", path)
+		return fmt.Errorf("verify: %s is not a directory", opts.path)
 	}
 
-	dirs, err := manifest.FindSkillDirs(path)
+	// When --sarif writes to stdout, that document must stand alone, so suppress
+	// the human-readable table / --json from stdout (it would otherwise be
+	// concatenated with the SARIF JSON and parse as neither).
+	sarifToStdout := opts.sarifPath == "-"
+
+	scanner := scope.DefaultScanner()
+	var results []scope.Result
+	if opts.trust {
+		// Seed (or refresh) the lock baseline from the currently-TRUSTED corpus,
+		// then report. ScanAndTrust persists ~/.skillsig/lock.yaml so the NEXT
+		// plain verify catches a skill that quietly broadens scope.
+		results, err = scanner.ScanAndTrust(opts.path)
+	} else {
+		results, err = scanner.Scan(opts.path)
+	}
 	if err != nil {
 		return fmt.Errorf("verify: scan: %w", err)
 	}
-	if len(dirs) == 0 {
-		if asJSON {
-			if err := report.RenderJSON(out, nil); err != nil {
-				return err
+
+	if len(results) == 0 {
+		if !sarifToStdout {
+			if opts.asJSON {
+				if err := report.RenderJSON(out, nil); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(out, "no SKILL.md files found under %s\n", opts.path)
 			}
-		} else {
-			fmt.Fprintf(out, "no SKILL.md files found under %s\n", path)
 		}
 		// An empty tree still gets an empty-but-valid SARIF run when requested,
 		// so a CI step that always uploads has a file to upload.
-		if sarifPath != "" {
-			if err := writeSARIF(out, sarifPath, nil); err != nil {
+		if opts.sarifPath != "" {
+			if err := writeSARIF(out, opts.sarifPath, nil); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	skills := make([]*manifest.Skill, 0, len(dirs))
-	for _, d := range dirs {
-		s, err := manifest.ParseSkill(d)
-		if err != nil {
-			return fmt.Errorf("verify: %w", err)
+	if !sarifToStdout {
+		if opts.asJSON {
+			if err := report.RenderJSON(out, results); err != nil {
+				return err
+			}
+		} else {
+			useColor := opts.allowColor && isTTY(out)
+			if err := report.Render(out, results, useColor); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, report.Summary(results))
 		}
-		skills = append(skills, s)
 	}
 
-	results := scope.EvaluateAll(skills)
-	if asJSON {
-		if err := report.RenderJSON(out, results); err != nil {
-			return err
-		}
-	} else {
-		useColor := allowColor && isTTY(out)
-		if err := report.Render(out, results, useColor); err != nil {
-			return err
-		}
-		fmt.Fprintln(out, report.Summary(results))
-	}
-
-	if sarifPath != "" {
-		if err := writeSARIF(out, sarifPath, results); err != nil {
+	if opts.sarifPath != "" {
+		if err := writeSARIF(out, opts.sarifPath, results); err != nil {
 			return err
 		}
 	}
 
-	if ci {
+	if opts.ci {
 		for _, r := range results {
 			if r.Verdict == scope.VerdictUnsigned || r.Verdict == scope.VerdictScopeDrifted {
 				return ErrCIDrift

@@ -160,12 +160,13 @@ attestation:
 | 配置 | 类型 | 默认 | 含义 |
 | --- | --- | --- | --- |
 | `SKILLSIG_HOME` | env | `$HOME/.skillsig` | 锁文件 / 临时凭据存放目录 |
-| `--ci` | flag | `false` | 出现 UNSIGNED 或 SCOPE-DRIFTED 时退出码非零，CI 用 |
+| `--ci` | flag | `false` | 出现 UNSIGNED 或 SCOPE-DRIFTED（含跨版本锁漂移）时退出码非零，CI 用 |
+| `--trust` | flag | `false` | 把当前所有 TRUSTED 的 Skill 范围写进 `~/.skillsig/lock.yaml`，作为后续漂移检测的基线（首次信任一份 Skill 语料时跑一次） |
 | `--json` | flag | `false` | 输出机器可读的 JSON 报告（`verify` / `diff` 都支持），方便 CI 用 `jq` 解析 |
-| `--sarif` | string | `""` | 额外写一份 SARIF 2.1.0 报告到该路径（`-` 表示标准输出），供 GitHub 代码扫描在 PR 上行内标注漂移 |
+| `--sarif` | string | `""` | 额外写一份 SARIF 2.1.0 报告到该路径（`-` 表示标准输出，此时 SARIF 是 stdout 上唯一文档），供 GitHub 代码扫描在 PR 上行内标注漂移 |
 | `--no-color` | flag | `false` | 关闭 ANSI 上色，方便 diff |
 | `attestation.sigstore_bundle` | yaml | `./skillsig.bundle` | manifest 指向的签名 bundle 路径 |
-| `~/.skillsig/lock.yaml` | yaml | 自动 | 每个 `skill_id` 上一次 TRUSTED 时的范围基线（m3） |
+| `~/.skillsig/lock.yaml` | yaml | 自动 | 每个 `skill_id` 上一次 TRUSTED 时的范围基线（由 `--trust` 写入；`verify` / `verify --ci` 都会比对它来抓跨版本漂移） |
 
 ## 发布到 CI
 
@@ -188,8 +189,13 @@ verify-skills:
     - skillsig verify --ci ./skills/
 ```
 
-`--ci` 让任何一行 `UNSIGNED` 或 `SCOPE-DRIFTED` 都直接 fail。配合 `--no-color`
-就能拿到稳定 diff 的纯文本输出。需要在流水线里按结果分支时，用 `--json` 拿结构化输出：
+先在可信状态跑一次 `skillsig verify --trust ./skills/` 把当前范围写进锁文件作基线，
+之后每次 `verify --ci` 都会拿当前 manifest 和锁基线比对——某个 Skill 在版本更新后悄悄
+拓宽了 `fs_write` / `network_egress` / `tools`（即便 SKILL.md 的 `allowed-tools` 仍在
+声明范围内），就会被判 `SCOPE-DRIFTED` 并 fail，无需再单独跑 `diff`。
+
+`--ci` 让任何一行 `UNSIGNED` 或 `SCOPE-DRIFTED`（含上面的跨版本锁漂移）都直接 fail。配合
+`--no-color` 就能拿到稳定 diff 的纯文本输出。需要在流水线里按结果分支时，用 `--json` 拿结构化输出：
 
 ```bash
 # 顶层 .drift 为 true 即代表有 UNSIGNED / SCOPE-DRIFTED 行
@@ -217,6 +223,7 @@ warning，干净的 PR 不产生任何标注：
 - [x] **m2** — `skillsig sign`：ed25519 dev 模式 + Sigstore keyless OIDC 占位（接 sigstore-go）
 - [x] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` 跨版本漂移（v0.2.0 修正 glob 感知 + 加 `--json`）
 - [x] **v0.3.0 加固** — glob 覆盖加上 segment 边界（堵住 `api.github.com*` 误盖 `api.github.com.attacker.net` 与 `*` / `**` 混淆），并加 `verify --sarif` 让 GitHub 代码扫描在 PR 上行内标注漂移
+- [x] **v0.4.0** — 让跨版本锁漂移真正在 `verify --ci`（与 SARIF 标注）里生效：此前 `verify` 走的是版本内检查，从不构造 Scanner，跨版本漂移只有 `diff` 能抓——现在 `verify` 直接走锁感知扫描，并新增 `verify --trust` 写基线；同时修掉 `--sarif -` 把表格 / JSON 与 SARIF 拼在 stdout 上导致无法解析的问题
 - [ ] **托管档** — `skillsig.cloud` 托管镜像 + 团队策略 + 飞书/Slack/微信群 webhook 告警
 - [ ] **runtime hook** — 在 host CLI 加载 Skill 之前把声明范围当成沙箱配置应用
 

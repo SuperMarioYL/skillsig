@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -148,19 +149,30 @@ func TestReport_Render_PlainTextContainsAllVerdicts(t *testing.T) {
 	}
 }
 
+// hermeticLock points SKILLSIG_HOME at a fresh tmp dir so verify runs against an
+// EMPTY lock baseline — the lock-aware Scanner then yields the same in-version
+// verdicts as the pre-lock EvaluateAll, keeping these fixture assertions stable
+// regardless of any real ~/.skillsig/lock.yaml on the machine running the tests.
+func hermeticLock(t *testing.T) {
+	t.Helper()
+	t.Setenv("SKILLSIG_HOME", t.TempDir())
+}
+
 func TestRunVerify_CIExitsOnDrift(t *testing.T) {
+	hermeticLock(t)
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	err := runVerify(&buf, root, true, false, false, "")
+	err := runVerify(&buf, verifyOpts{path: root, ci: true})
 	if !errors.Is(err, ErrCIDrift) {
 		t.Fatalf("expected ErrCIDrift, got %v", err)
 	}
 }
 
 func TestRunVerify_NonCIIsZeroEvenWithDrift(t *testing.T) {
+	hermeticLock(t)
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	if err := runVerify(&buf, root, false, false, false, ""); err != nil {
+	if err := runVerify(&buf, verifyOpts{path: root}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(buf.String(), "SCOPE-DRIFTED") {
@@ -172,10 +184,11 @@ func TestRunVerify_NonCIIsZeroEvenWithDrift(t *testing.T) {
 // SARIF 2.1.0 log to the given path, with a result per non-TRUSTED skill and a
 // level=error for the scope-drifted fixture.
 func TestRunVerify_SARIFFile(t *testing.T) {
+	hermeticLock(t)
 	root := testdataRoot(t)
 	out := filepath.Join(t.TempDir(), "skillsig.sarif")
 	var buf bytes.Buffer
-	if err := runVerify(&buf, root, false, false, false, out); err != nil {
+	if err := runVerify(&buf, verifyOpts{path: root, sarifPath: out}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	raw, err := os.ReadFile(out)
@@ -215,9 +228,10 @@ func TestRunVerify_SARIFFile(t *testing.T) {
 // single JSON object whose summary tallies match the three fixtures and whose
 // top-level drift flag is true (one unsigned + one scope-drifted row).
 func TestRunVerify_JSONOutput(t *testing.T) {
+	hermeticLock(t)
 	root := testdataRoot(t)
 	var buf bytes.Buffer
-	if err := runVerify(&buf, root, false, false, true, ""); err != nil {
+	if err := runVerify(&buf, verifyOpts{path: root, asJSON: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var got struct {
@@ -245,6 +259,173 @@ func TestRunVerify_JSONOutput(t *testing.T) {
 	if len(got.Skills) != 3 {
 		t.Errorf("expected 3 skill rows, got %d", len(got.Skills))
 	}
+}
+
+// writeSkill writes a minimal signed skill (SKILL.md + SKILLSIG.yaml sidecar)
+// into dir/<name> so a test can construct a corpus whose declared scope it
+// controls. allowed-tools and declares.tools are kept identical so the skill is
+// TRUSTED in-version; the lock-drift test then re-writes declares to broaden it.
+func writeSkill(t *testing.T, root, name, skillID string, tools []string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	toolsYAML := func(indent string) string {
+		var b strings.Builder
+		for _, tl := range tools {
+			b.WriteString(indent + "- " + tl + "\n")
+		}
+		return b.String()
+	}
+	skillMD := "---\nname: " + name + "\nallowed-tools:\n" + toolsYAML("  ") + "---\n# " + name + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	sidecar := "skillsig: v1\nskill_id: " + skillID + "\nversion: v1\ndeclares:\n  tools:\n" + toolsYAML("    ")
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("write SKILLSIG.yaml: %v", err)
+	}
+	return dir
+}
+
+// TestRunVerify_TrustThenLockDriftFailsCI is the headline fix for v0.4.0: the
+// lock-aware drift path now runs through `verify` (not only `diff`). After
+// `verify --trust` records a TRUSTED skill's scope, re-signing that skill with a
+// broadened grant makes a plain `verify` report SCOPE-DRIFTED and `verify --ci`
+// exit non-zero — the cross-version jqwik vector caught at the CI gate.
+func TestRunVerify_TrustThenLockDriftFailsCI(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SKILLSIG_HOME", home)
+	corpus := t.TempDir()
+	writeSkill(t, corpus, "demo", "examples/demo", []string{"Read", "Bash(git status*)"})
+
+	// 1) Seed the baseline: the skill is TRUSTED and gets recorded into the lock.
+	var seed bytes.Buffer
+	if err := runVerify(&seed, verifyOpts{path: corpus, trust: true}); err != nil {
+		t.Fatalf("trust seed: %v", err)
+	}
+	if !strings.Contains(seed.String(), "TRUSTED") {
+		t.Fatalf("seed run should show TRUSTED; got:\n%s", seed.String())
+	}
+	lock := filepath.Join(home, "lock.yaml")
+	if _, err := os.Stat(lock); err != nil {
+		t.Fatalf("--trust should have written %s: %v", lock, err)
+	}
+
+	// 2) Re-sign the SAME skill_id with a broadened grant (adds a dangerous tool).
+	writeSkill(t, corpus, "demo", "examples/demo", []string{"Read", "Bash(git status*)", "Bash(rm -rf ~/)"})
+
+	// 3) A plain (read-only) verify now flags drift vs. the recorded baseline.
+	var plain bytes.Buffer
+	if err := runVerify(&plain, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("plain verify after drift: %v", err)
+	}
+	if !strings.Contains(plain.String(), "SCOPE-DRIFTED") {
+		t.Errorf("re-signed broadened skill should be SCOPE-DRIFTED vs lock; got:\n%s", plain.String())
+	}
+
+	// 4) verify --ci exits non-zero on that lock drift (the CI merge gate).
+	var ci bytes.Buffer
+	if err := runVerify(&ci, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("verify --ci should fail on lock drift; got err=%v", err)
+	}
+}
+
+// TestRunVerify_LockAwareWithoutTrustStaysTrusted guards the inverse: with an
+// empty lock and no --trust, the same TRUSTED skill stays TRUSTED — the lock
+// path must not invent drift where there is no recorded baseline.
+func TestRunVerify_LockAwareWithoutTrustStaysTrusted(t *testing.T) {
+	t.Setenv("SKILLSIG_HOME", t.TempDir())
+	corpus := t.TempDir()
+	writeSkill(t, corpus, "demo", "examples/demo", []string{"Read"})
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus, ci: true}); err != nil {
+		t.Fatalf("a single TRUSTED skill with no lock baseline must pass --ci; got %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "TRUSTED") {
+		t.Errorf("expected TRUSTED; got:\n%s", buf.String())
+	}
+}
+
+// TestRunVerify_SARIFStdoutIsSingleDocument is the second v0.4.0 fix: `--sarif -`
+// must emit ONE valid SARIF document on stdout, not the human table/JSON
+// concatenated with the SARIF JSON. The whole stdout must JSON-parse, and the
+// human table tokens must be absent.
+func TestRunVerify_SARIFStdoutIsSingleDocument(t *testing.T) {
+	hermeticLock(t)
+	root := testdataRoot(t)
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: root, sarifPath: "-"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.Bytes()
+	var got struct {
+		Version string `json:"version"`
+		Runs    []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+				Level  string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("stdout is not a single valid SARIF document: %v\n%s", err, out)
+	}
+	if got.Version != "2.1.0" {
+		t.Errorf("sarif version = %q, want 2.1.0", got.Version)
+	}
+	// The human-readable table header must NOT be on stdout in this mode.
+	if strings.Contains(string(out), "VERDICT") {
+		t.Errorf("table header leaked into --sarif - stdout:\n%s", out)
+	}
+	var sawDriftError bool
+	for _, r := range got.Runs[0].Results {
+		if r.RuleID == "skillsig/scope-drifted" && r.Level == "error" {
+			sawDriftError = true
+		}
+	}
+	if !sawDriftError {
+		t.Errorf("expected a scope-drifted result at level=error; results=%+v", got.Runs[0].Results)
+	}
+}
+
+// TestRunVerify_JSONAndSARIFStdoutNotConcatenated nails the exact concat bug:
+// `--json --sarif -` previously joined two root JSON objects back-to-back (the
+// --json report then the SARIF doc), which no parser can read. Now stdout is a
+// single SARIF object — json.Decoder must see exactly one value with no trailing
+// data.
+func TestRunVerify_JSONAndSARIFStdoutNotConcatenated(t *testing.T) {
+	hermeticLock(t)
+	root := testdataRoot(t)
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: root, asJSON: true, sarifPath: "-"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(buf.Bytes()))
+	var first map[string]any
+	if err := dec.Decode(&first); err != nil {
+		t.Fatalf("stdout did not decode as one JSON object: %v\n%s", err, buf.String())
+	}
+	// There must be NO second JSON value trailing the first.
+	var second map[string]any
+	if err := dec.Decode(&second); err == nil {
+		t.Errorf("stdout contained a SECOND concatenated JSON object (the old bug):\n%s", buf.String())
+	}
+	// And the single object must be the SARIF doc (has a "runs" array), not the
+	// --json report — SARIF is the sole stdout artifact in this mode.
+	if _, ok := first["runs"]; !ok {
+		t.Errorf("the single stdout object should be the SARIF doc (with \"runs\"); got keys %v", keysOf(first))
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }
 
 func containsString(xs []string, s string) bool {
