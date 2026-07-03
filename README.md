@@ -224,6 +224,7 @@ warning，干净的 PR 不产生任何标注：
 - [x] **m3** — `skillsig diff old/ new/` + `~/.skillsig/lock.yaml` 跨版本漂移（v0.2.0 修正 glob 感知 + 加 `--json`）
 - [x] **v0.3.0 加固** — glob 覆盖加上 segment 边界（堵住 `api.github.com*` 误盖 `api.github.com.attacker.net` 与 `*` / `**` 混淆），并加 `verify --sarif` 让 GitHub 代码扫描在 PR 上行内标注漂移
 - [x] **v0.4.0** — 让跨版本锁漂移真正在 `verify --ci`（与 SARIF 标注）里生效：此前 `verify` 走的是版本内检查，从不构造 Scanner，跨版本漂移只有 `diff` 能抓——现在 `verify` 直接走锁感知扫描，并新增 `verify --trust` 写基线；同时修掉 `--sarif -` 把表格 / JSON 与 SARIF 拼在 stdout 上导致无法解析的问题
+- [x] **v0.5.0** — 补上最后一条没做边界的轴：**tools** 轴。此前 `Bash(git status*)` 用裸前缀匹配，会把形近的**兄弟命令** `Bash(git statuscheckout --force)` 也当成已覆盖（它只是文本前缀相同、其实是另一个子命令），于是重签的 skill 换个同前缀子命令就能在 `diff` 和 `verify --ci` 里静默逃过 `SCOPE-DRIFTED`。现在通配符做**参数 token 边界**判断（额外文本必须另起一个以空格分隔的 token），与 `fs_write` / `network_egress` 的 `/`、`.` 边界一致——`git status -s` / `--porcelain` 这类细化仍算覆盖，形近兄弟命令则判为增长。四条声明轴（model × tools × fs_write × network_egress）至此对“变宽”有了统一定义
 - [ ] **托管档** — `skillsig.cloud` 托管镜像 + 团队策略 + 飞书/Slack/微信群 webhook 告警
 - [ ] **runtime hook** — 在 host CLI 加载 Skill 之前把声明范围当成沙箱配置应用
 

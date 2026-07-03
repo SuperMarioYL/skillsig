@@ -121,6 +121,18 @@ func covered(declared []string, actual string) bool {
 // caller). The wildcard is honored only when both sides share the same outer
 // tool name (e.g. "Bash") to prevent a "*" entry from accidentally covering
 // every grant.
+//
+// The wildcard prefix is ARGUMENT-TOKEN boundary-aware (v0.5.0), mirroring the
+// path/host boundary discipline in glob.go so the tools axis agrees with fs_write
+// and network_egress on what "broader" means. A declared "Bash(git status*)"
+// covers a refinement whose extra text begins a NEW argument token —
+// "Bash(git status -s)" / "Bash(git status --porcelain)" — but does NOT raw-cover
+// a look-alike SIBLING command "Bash(git statuscheckout --force)", where "checkout"
+// continues the same token. Before this fix a raw strings.HasPrefix swallowed the
+// look-alike, so a re-signed skill that swapped a declared subcommand for a
+// same-prefix different subcommand escaped SCOPE-DRIFTED on both `diff` and the
+// lock-aware `verify --ci` (the shared scopeGrowth->addedTools->covered->matchGlob
+// path) — the exact cross-version escalation skillsig exists to catch.
 func matchGlob(declared, actual string) bool {
 	dTool, dArg, dOK := splitToolArg(declared)
 	aTool, aArg, aOK := splitToolArg(actual)
@@ -134,7 +146,40 @@ func matchGlob(declared, actual string) bool {
 		return strings.EqualFold(dArg, aArg)
 	}
 	prefix := strings.TrimSuffix(dArg, "*")
-	return strings.HasPrefix(aArg, prefix)
+	return argPrefixCovers(prefix, aArg)
+}
+
+// argSep is the argument-token separator in the Claude Code Bash grant grammar:
+// a space between shell tokens. "git status*" covers "git status <anything as a
+// new token>" but not "git statusX" (X continues the same token).
+const argSep = ' '
+
+// argPrefixCovers reports whether a wildcard prefix covers a candidate argument
+// at an argument-token boundary:
+//   - an empty prefix ("*" alone) covers everything for this tool;
+//   - a prefix already ending at the separator covers any candidate that starts
+//     with it (the boundary is on the prefix side);
+//   - otherwise the candidate must equal the prefix, or its next char after the
+//     prefix must be the separator — so the extra text begins a NEW token.
+//
+// This is the tools-axis analogue of boundaryPrefix() in glob.go (which uses '/'
+// for fs paths and '.' for hosts); here the separator is a space.
+func argPrefixCovers(prefix, candidate string) bool {
+	if prefix == "" {
+		return true // "Tool(*)" — declared everything on this tool
+	}
+	if !strings.HasPrefix(candidate, prefix) {
+		return false
+	}
+	if candidate == prefix {
+		return true
+	}
+	// The prefix already ends at a token boundary (declared "git status *").
+	if prefix[len(prefix)-1] == argSep {
+		return true
+	}
+	// Otherwise the char right after the prefix must start a new token.
+	return candidate[len(prefix)] == argSep
 }
 
 func splitToolArg(s string) (tool, arg string, ok bool) {

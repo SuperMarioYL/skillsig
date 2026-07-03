@@ -9,6 +9,38 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.5.0] — 2026-07-03
+
+Closes the last un-boundaried scope axis. The path-shaped axes (`fs_write`,
+`network_egress`) got boundary-aware coverage in v0.3.0, but the **tools** axis
+still matched wildcards with a raw prefix — so a re-signed skill could swap a
+declared subcommand for a same-prefix sibling command and escape SCOPE-DRIFTED.
+All four declared-scope axes now agree on what "broader" means.
+
+### Security / Fixed
+- **Tools-axis wildcard prefix confusion (high).** `matchGlob` honored a
+  `Tool(prefix*)` grant with a raw `strings.HasPrefix`, so a declared
+  `Bash(git status*)` covered not just refinements like `Bash(git status -s)`
+  but also a look-alike **sibling** command `Bash(git statuscheckout --force)` —
+  a *different* subcommand token that merely shares the text prefix `git status`.
+  Because the cross-version growth check flows through this same predicate
+  (`scopeGrowth → addedTools → covered → matchGlob`), a re-signed skill that
+  swapped a declared subcommand for a same-prefix sibling passed SCOPE-DRIFTED
+  silently on both `skillsig diff` and lock-aware `verify --ci` — the exact
+  cross-version escalation skillsig exists to catch. The wildcard is now
+  **argument-token boundary-aware**: the prefix covers a candidate only when the
+  extra text begins a new argument token (a space boundary), mirroring the `/`
+  (path) and `.` (host) boundary discipline already used by `fs_write` /
+  `network_egress` in `internal/scope/glob.go`. Refinements
+  (`Bash(git status -s)`, `Bash(git status --porcelain)`) stay covered; the
+  look-alike sibling is now flagged growth.
+
+### Tests
+- New `internal/scope/scope_test.go` pins both directions: a look-alike sibling
+  token (`git statuscheckout`) is reported as growth on the shared
+  `scopeGrowth`/`covered`/`matchGlob` path, and a space-delimited refinement
+  (`git status -s` / `--porcelain`) is not — no false positive.
+
 ## [0.4.0] — 2026-06-30
 
 Closes the gap that let the product's headline check sit unreachable: the
