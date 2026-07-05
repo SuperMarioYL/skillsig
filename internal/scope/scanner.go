@@ -51,6 +51,14 @@ type Scanner struct {
 	// checks: every skill is evaluated against itself only (the m1 default).
 	LockPath string
 
+	// ForceTrust, when true, lets ScanAndTrust re-baseline a skill whose scope
+	// has DRIFTED vs. the existing lock (i.e. broadened its grants across
+	// versions). The safe default (false) refuses to overwrite a drifted
+	// skill's baseline — otherwise `verify --trust` would silently launder a
+	// cross-version scope escalation into the lock and erase the drift. It maps
+	// to the CLI's `verify --trust --force-trust`.
+	ForceTrust bool
+
 	mu   sync.Mutex
 	lock *LockFile
 }
@@ -136,15 +144,22 @@ func (s *Scanner) loadLock() (*LockFile, error) {
 	return s.lock, nil
 }
 
-// ScanAndTrust walks root exactly like Scan, then records every TRUSTED skill's
-// current declared scope into the lock file as the baseline future verify runs
-// compare against. It is what `verify --trust` calls: the first time you trust a
-// corpus it seeds ~/.skillsig/lock.yaml so a later re-signed skill that broadens
-// its grants is flagged SCOPE-DRIFTED on the next plain `verify` (the m3 / lock
-// drift gate). A skill that is already SCOPE-DRIFTED or UNSIGNED is NOT recorded —
-// you only ever pin scopes you actually trust. Existing entries for skills not in
-// this scan are preserved (additive trust), and re-trusting a skill refreshes its
-// snapshot. Returns the post-write results so the caller can still print a table.
+// ScanAndTrust walks root exactly like Scan (INCLUDING the cross-version
+// lock-drift check), then records every clean TRUSTED skill's current declared
+// scope into the lock file as the baseline future verify runs compare against.
+// It is what `verify --trust` calls: the first time you trust a corpus it seeds
+// ~/.skillsig/lock.yaml so a later re-signed skill that broadens its grants is
+// flagged SCOPE-DRIFTED on the next plain `verify` (the m3 / lock drift gate).
+//
+// Crucially, a skill that has DRIFTED vs. the existing lock (broadened its grants
+// across versions) is NOT re-baselined by default — it is reported SCOPE-DRIFTED
+// and its old baseline is left intact, so `verify --trust` can never silently
+// launder a scope escalation into the lock. Re-baselining a drifted skill on
+// purpose requires ForceTrust (the CLI's `--force-trust`). UNSIGNED skills are
+// never recorded — you only ever pin scopes you actually vouch for. Existing
+// entries for skills not in this scan are preserved (additive trust), and
+// re-trusting a clean skill refreshes its snapshot. Returns the post-write
+// results (with drift applied) so the caller can still print a table / SARIF.
 func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 	if s.LockPath == "" {
 		return nil, errors.New("scanner: empty LockPath (cannot --trust without a lock location)")
@@ -176,13 +191,39 @@ func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 		lock.Entries = map[string]LockEntry{}
 	}
 
+	// Apply the cross-version lock-drift check BEFORE recording, exactly like a
+	// plain Scan does. Without this, a skill that broadened its declared scope
+	// vs. the existing baseline would still read in-version TRUSTED and get its
+	// (now-broadened) declares written straight into the lock — silently
+	// laundering a scope escalation and printing TRUSTED. Running applyLockDrift
+	// here makes such a skill surface as SCOPE-DRIFTED in the returned results
+	// (and thus in the printed table / SARIF), and lets the recording loop below
+	// refuse to re-baseline it unless the caller opts in via ForceTrust.
+	for i, r := range results {
+		results[i] = applyLockDrift(r, skills[i], lock)
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i, r := range results {
-		if r.Verdict != VerdictTrusted {
-			continue
-		}
 		sk := skills[i]
 		if sk.Manifest == nil || sk.Manifest.SkillID == "" {
+			continue
+		}
+		switch r.Verdict {
+		case VerdictTrusted:
+			// Clean skill (in-version TRUSTED and not drifted vs. lock): record
+			// its current scope as the baseline future verify runs compare against.
+		case VerdictScopeDrifted:
+			// A skill that drifted vs. the existing lock. Re-baselining it would
+			// erase the drift and defeat the whole point of --trust. Only do so
+			// when the caller explicitly asks (--force-trust); otherwise leave the
+			// old baseline intact so the next plain `verify` still catches it.
+			if !s.ForceTrust {
+				continue
+			}
+		default:
+			// UNSIGNED / anything else is never pinned — you only trust scopes you
+			// actually vouch for.
 			continue
 		}
 		lock.Entries[sk.Manifest.SkillID] = LockEntry{

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"github.com/SuperMarioYL/skillsig/internal/manifest"
 	"github.com/SuperMarioYL/skillsig/internal/report"
 	"github.com/SuperMarioYL/skillsig/internal/scope"
+	"github.com/SuperMarioYL/skillsig/internal/signer"
+	"github.com/SuperMarioYL/skillsig/internal/verifier"
 )
 
 // testdataRoot returns the absolute path of testdata/skills (two dirs up from
@@ -224,12 +227,100 @@ func TestRunVerify_SARIFFile(t *testing.T) {
 	}
 }
 
+// TestRunVerify_SignatureDowngradesScopeTrusted is the v0.6.0 fix: verify now
+// checks the signature bundle, so a scope-clean skill with NO valid bundle can
+// no longer read TRUSTED. Without a bundle it is UNSIGNED; with a bundle that
+// doesn't verify (manifest tampered after signing) it is SCOPE-DRIFTED and
+// verify --ci fails — closing the cold-start hole where a tampered manifest +
+// no bundle passed TRUSTED.
+func TestRunVerify_SignatureDowngradesScopeTrusted(t *testing.T) {
+	hermeticLock(t)
+
+	// (a) scope-clean but UNSIGNED (no bundle) → UNSIGNED, not TRUSTED.
+	unsignedCorpus := t.TempDir()
+	writeSkillNoBundle(t, unsignedCorpus, "demo", "examples/demo", []string{"Read"})
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: unsignedCorpus}); err != nil {
+		t.Fatalf("verify unsigned: %v", err)
+	}
+	if strings.Contains(buf.String(), "TRUSTED") {
+		t.Errorf("an unsigned skill must NOT be TRUSTED; got:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "UNSIGNED") {
+		t.Errorf("expected UNSIGNED; got:\n%s", buf.String())
+	}
+
+	// (b) tampered manifest (broadened AFTER signing, bundle left stale) → the
+	//     bundle no longer verifies, so verify reports SCOPE-DRIFTED and --ci fails.
+	tamperCorpus := t.TempDir()
+	dir := writeSkill(t, tamperCorpus, "demo", "examples/demo", []string{"Read"})
+	sidecar := "skillsig: v1\nskill_id: examples/demo\nversion: v1\ndeclares:\n  tools:\n    - Read\n    - Bash(rm -rf ~/)\n"
+	// also widen allowed-tools so the SCOPE check itself still passes in-version,
+	// isolating the SIGNATURE as the reason the row is not TRUSTED.
+	skillMD := "---\nname: demo\nallowed-tools:\n  - Read\n  - Bash(rm -rf ~/)\n---\n# demo\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("tamper sidecar: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("tamper SKILL.md: %v", err)
+	}
+	var ci bytes.Buffer
+	if err := runVerify(&ci, verifyOpts{path: tamperCorpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("tampered-manifest skill should fail verify --ci; got err=%v\n%s", err, ci.String())
+	}
+}
+
+// signedFixtureRoot copies the testdata/skills fixtures into a temp dir and signs
+// the happy-path skill (safe-skill) with a valid dev bundle, so it verifies both
+// scope-TRUSTED AND SIGNED. jqwik-style-bad (scope-drifted) and scope-mismatch
+// (unsigned) are copied as-is — their verdicts don't depend on a bundle. The
+// checked-in fixtures stay bundle-free so no committed binary can rot against a
+// canonical-payload change; the bundle is minted per-run instead.
+func signedFixtureRoot(t *testing.T) string {
+	t.Helper()
+	src := testdataRoot(t)
+	dst := t.TempDir()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("read fixtures: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sd := filepath.Join(src, e.Name())
+		dd := filepath.Join(dst, e.Name())
+		if err := os.MkdirAll(dd, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dd, err)
+		}
+		files, err := os.ReadDir(sd)
+		if err != nil {
+			t.Fatalf("read %s: %v", sd, err)
+		}
+		for _, f := range files {
+			if f.IsDir() {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(sd, f.Name()))
+			if err != nil {
+				t.Fatalf("read %s: %v", f.Name(), err)
+			}
+			if err := os.WriteFile(filepath.Join(dd, f.Name()), b, 0o644); err != nil {
+				t.Fatalf("write %s: %v", f.Name(), err)
+			}
+		}
+	}
+	signSkillBundle(t, filepath.Join(dst, "safe-skill"))
+	return dst
+}
+
 // TestRunVerify_JSONOutput checks the new --json mode: the output parses as a
 // single JSON object whose summary tallies match the three fixtures and whose
-// top-level drift flag is true (one unsigned + one scope-drifted row).
+// top-level drift flag is true (one unsigned + one scope-drifted row). safe-skill
+// is signed so it verifies TRUSTED (scope OK + valid signature).
 func TestRunVerify_JSONOutput(t *testing.T) {
 	hermeticLock(t)
-	root := testdataRoot(t)
+	root := signedFixtureRoot(t)
 	var buf bytes.Buffer
 	if err := runVerify(&buf, verifyOpts{path: root, asJSON: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -261,11 +352,22 @@ func TestRunVerify_JSONOutput(t *testing.T) {
 	}
 }
 
-// writeSkill writes a minimal signed skill (SKILL.md + SKILLSIG.yaml sidecar)
-// into dir/<name> so a test can construct a corpus whose declared scope it
-// controls. allowed-tools and declares.tools are kept identical so the skill is
-// TRUSTED in-version; the lock-drift test then re-writes declares to broaden it.
+// writeSkill writes a minimal SIGNED skill (SKILL.md + SKILLSIG.yaml sidecar +
+// a valid dev ed25519 skillsig.bundle) into dir/<name> so a test can construct a
+// corpus whose declared scope it controls. allowed-tools and declares.tools are
+// kept identical so the skill is TRUSTED in-version; the signature is valid so it
+// stays TRUSTED once signature verification runs; the lock-drift test then
+// re-writes declares to broaden it.
 func writeSkill(t *testing.T, root, name, skillID string, tools []string) string {
+	t.Helper()
+	dir := writeSkillNoBundle(t, root, name, skillID, tools)
+	signSkillBundle(t, dir)
+	return dir
+}
+
+// writeSkillNoBundle writes just the SKILL.md + SKILLSIG.yaml sidecar (no bundle)
+// so a test can assert the UNSIGNED / BAD-SIGNATURE paths deliberately.
+func writeSkillNoBundle(t *testing.T, root, name, skillID string, tools []string) string {
 	t.Helper()
 	dir := filepath.Join(root, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -287,6 +389,37 @@ func writeSkill(t *testing.T, root, name, skillID string, tools []string) string
 		t.Fatalf("write SKILLSIG.yaml: %v", err)
 	}
 	return dir
+}
+
+// signSkillBundle signs the skill in dir with an ephemeral dev ed25519 key and
+// writes a valid skillsig.bundle next to it (the path verify resolves by
+// default), so the skill verifies SIGNED. It re-parses the skill so the bundle
+// is signed over the SAME canonical payload verify will re-derive.
+func signSkillBundle(t *testing.T, dir string) {
+	t.Helper()
+	sk, err := manifest.ParseSkill(dir)
+	if err != nil {
+		t.Fatalf("parse for signing %s: %v", dir, err)
+	}
+	payload, err := verifier.CanonicalPayload(sk.Manifest)
+	if err != nil {
+		t.Fatalf("canonical payload: %v", err)
+	}
+	s, err := signer.NewDev("test-ephemeral")
+	if err != nil {
+		t.Fatalf("new dev signer: %v", err)
+	}
+	bundle, err := s.Sign(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skillsig.bundle"), append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
 }
 
 // TestRunVerify_TrustThenLockDriftFailsCI is the headline fix for v0.4.0: the
@@ -329,6 +462,70 @@ func TestRunVerify_TrustThenLockDriftFailsCI(t *testing.T) {
 	var ci bytes.Buffer
 	if err := runVerify(&ci, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
 		t.Errorf("verify --ci should fail on lock drift; got err=%v", err)
+	}
+}
+
+// TestRunVerify_TrustDoesNotRebaselineDriftedScope is the v0.6.0 fix: a second
+// `verify --trust` on a corpus where one skill quietly broadened its scope must
+// NOT silently overwrite that skill's lock baseline with the broadened scope
+// (which would launder the escalation and erase the drift). Instead the skill is
+// reported SCOPE-DRIFTED and its old baseline is preserved, so a later plain
+// verify still catches it. `--force-trust` is the explicit opt-in to re-baseline.
+func TestRunVerify_TrustDoesNotRebaselineDriftedScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SKILLSIG_HOME", home)
+	corpus := t.TempDir()
+	writeSkill(t, corpus, "demo", "examples/demo", []string{"Read", "Bash(git status*)"})
+
+	// 1) Seed the baseline (clean skill → TRUSTED, recorded).
+	var seed bytes.Buffer
+	if err := runVerify(&seed, verifyOpts{path: corpus, trust: true}); err != nil {
+		t.Fatalf("trust seed: %v", err)
+	}
+	lock := filepath.Join(home, "lock.yaml")
+	baselineBefore, err := os.ReadFile(lock)
+	if err != nil {
+		t.Fatalf("read seeded lock: %v", err)
+	}
+
+	// 2) Broaden the skill's scope (re-signed over the broadened scope, so its
+	//    bundle is valid — the only thing wrong is cross-version drift vs. lock).
+	writeSkill(t, corpus, "demo", "examples/demo", []string{"Read", "Bash(git status*)", "Bash(rm -rf ~/)"})
+
+	// 3) verify --trust WITHOUT --force-trust: the drifted skill must be reported
+	//    SCOPE-DRIFTED and its lock entry must be left UNCHANGED (not re-baselined).
+	var retrust bytes.Buffer
+	if err := runVerify(&retrust, verifyOpts{path: corpus, trust: true}); err != nil {
+		t.Fatalf("re-trust: %v", err)
+	}
+	if !strings.Contains(retrust.String(), "SCOPE-DRIFTED") {
+		t.Errorf("re-trust of a drifted skill should report SCOPE-DRIFTED; got:\n%s", retrust.String())
+	}
+	baselineAfter, err := os.ReadFile(lock)
+	if err != nil {
+		t.Fatalf("read lock after re-trust: %v", err)
+	}
+	if string(baselineAfter) != string(baselineBefore) {
+		t.Errorf("verify --trust silently re-baselined a drifted skill (lock changed):\nbefore:\n%s\nafter:\n%s",
+			baselineBefore, baselineAfter)
+	}
+
+	// 4) A plain verify --ci still catches the drift (baseline was preserved).
+	var ci bytes.Buffer
+	if err := runVerify(&ci, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("plain verify --ci after non-forced re-trust should still fail on drift; got err=%v", err)
+	}
+
+	// 5) --force-trust IS the explicit opt-in: it re-baselines the broadened scope,
+	//    after which a plain verify --ci passes (the new scope is now the baseline).
+	var force bytes.Buffer
+	if err := runVerify(&force, verifyOpts{path: corpus, trust: true, forceTrust: true}); err != nil {
+		t.Fatalf("force-trust: %v", err)
+	}
+	var ciAfterForce bytes.Buffer
+	if err := runVerify(&ciAfterForce, verifyOpts{path: corpus, ci: true}); err != nil {
+		t.Errorf("after --force-trust, plain verify --ci should pass (baseline updated); got %v\n%s",
+			err, ciAfterForce.String())
 	}
 }
 

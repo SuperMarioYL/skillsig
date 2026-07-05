@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/spf13/cobra"
 
+	"github.com/SuperMarioYL/skillsig/internal/manifest"
 	"github.com/SuperMarioYL/skillsig/internal/report"
 	"github.com/SuperMarioYL/skillsig/internal/scope"
+	"github.com/SuperMarioYL/skillsig/internal/verifier"
 )
 
 // ErrCIDrift is returned (and surfaces as exit-1) when --ci is set and any row
@@ -32,6 +35,7 @@ func newVerifyCmd() *cobra.Command {
 			asJSON, _ := cmd.Flags().GetBool("json")
 			sarifPath, _ := cmd.Flags().GetString("sarif")
 			trust, _ := cmd.Flags().GetBool("trust")
+			forceTrust, _ := cmd.Flags().GetBool("force-trust")
 			return runVerify(cmd.OutOrStdout(), verifyOpts{
 				path:       path,
 				ci:         ci,
@@ -39,6 +43,7 @@ func newVerifyCmd() *cobra.Command {
 				asJSON:     asJSON,
 				sarifPath:  sarifPath,
 				trust:      trust,
+				forceTrust: forceTrust,
 			})
 		},
 	}
@@ -47,6 +52,7 @@ func newVerifyCmd() *cobra.Command {
 	cmd.Flags().Bool("json", false, "emit a machine-readable JSON report instead of the table")
 	cmd.Flags().String("sarif", "", "also write a SARIF 2.1.0 report to this path (\"-\" for stdout) for GitHub code-scanning")
 	cmd.Flags().Bool("trust", false, "record every TRUSTED skill's current scope into the lock as the drift baseline (seed ~/.skillsig/lock.yaml)")
+	cmd.Flags().Bool("force-trust", false, "with --trust, also re-baseline a SCOPE-DRIFTED skill (overwrite its lock entry with the broadened scope); off by default so --trust can't silently launder a scope escalation")
 	return cmd
 }
 
@@ -60,6 +66,7 @@ type verifyOpts struct {
 	asJSON     bool
 	sarifPath  string
 	trust      bool
+	forceTrust bool
 }
 
 // runVerify is the testable core. It walks path through the LOCK-AWARE scanner
@@ -93,6 +100,7 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 	sarifToStdout := opts.sarifPath == "-"
 
 	scanner := scope.DefaultScanner()
+	scanner.ForceTrust = opts.forceTrust
 	var results []scope.Result
 	if opts.trust {
 		// Seed (or refresh) the lock baseline from the currently-TRUSTED corpus,
@@ -105,6 +113,14 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 	if err != nil {
 		return fmt.Errorf("verify: scan: %w", err)
 	}
+
+	// Fold signature-bundle verification into the scope results so a TRUSTED
+	// verdict actually means "the attestation is valid," not just "the declared
+	// scope matches the runtime grants." Without this, an attacker could tamper
+	// the manifest to cover a malicious grant, ship no/invalid bundle, and still
+	// pass verify TRUSTED at cold-start (before any lock baseline exists) — the
+	// exact supply-chain vector skillsig exists to catch.
+	results = applySignatureVerdicts(opts.path, results)
 
 	if len(results) == 0 {
 		if !sarifToStdout {
@@ -154,6 +170,63 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 		}
 	}
 	return nil
+}
+
+// applySignatureVerdicts folds bundle-signature verification into the scope
+// results. It re-walks the same skill dirs the scanner did (same sorted order),
+// runs verifier.VerifySkill on each, and downgrades a scope-TRUSTED row whose
+// signature is missing or invalid — so TRUSTED means BOTH "declared scope
+// matches runtime grants (and lock)" AND "the attestation is valid."
+//
+// Downgrade rules (only ever tighten a verdict, never loosen it):
+//   - NO-BUNDLE      → a TRUSTED row becomes UNSIGNED (there is no attestation).
+//   - BAD-SIGNATURE  → a TRUSTED row becomes SCOPE-DRIFTED (the bundle is present
+//     but does not verify against the declared scope — a tampered/forged
+//     attestation is a supply-chain red flag, so it blocks --ci like drift).
+//   - KEYLESS-PENDING → left as-is (the dev build can't verify Fulcio bundles;
+//     annotate but don't fail, matching verifier.ErrKeylessNotWired semantics).
+//   - SIGNED          → no change; the scope verdict already stands on its own.
+//
+// A row that scope already marked UNSIGNED / SCOPE-DRIFTED is left untouched —
+// it is already failing for a stronger reason.
+//
+// If the tree can't be re-walked (it was walked fine moments ago by the scanner,
+// so this is defensive), the original results pass through unchanged.
+func applySignatureVerdicts(root string, results []scope.Result) []scope.Result {
+	dirs, err := manifest.FindSkillDirs(root)
+	if err != nil {
+		return results
+	}
+	sort.Strings(dirs)
+
+	// Map each skill dir → its signature verdict.
+	sigByDir := make(map[string]verifier.Verdict, len(dirs))
+	for _, d := range dirs {
+		sk, err := manifest.ParseSkill(d)
+		if err != nil {
+			continue // a malformed skill has no verifiable signature; leave its scope row alone
+		}
+		sigByDir[sk.Dir] = verifier.VerifySkill(sk).Verdict
+	}
+
+	for i, r := range results {
+		if r.Verdict != scope.VerdictTrusted {
+			continue // only a scope-TRUSTED row can be downgraded by a bad signature
+		}
+		switch sigByDir[r.Dir] {
+		case verifier.VerdictNoBundle:
+			results[i].Verdict = scope.VerdictUnsigned
+			results[i].Details = "no valid signature bundle (unsigned)"
+		case verifier.VerdictBadSignature:
+			results[i].Verdict = scope.VerdictScopeDrifted
+			results[i].Details = "signature bundle does not verify against the declared scope (tampered or forged attestation)"
+		case verifier.VerdictKeylessPending:
+			results[i].Details = r.Details + " [keyless bundle — signature not verified in this build]"
+		default:
+			// VerdictSigned (or an unknown dir with no manifest) → keep TRUSTED.
+		}
+	}
+	return results
 }
 
 // writeSARIF emits the SARIF 2.1.0 report to sarifPath, or to out when sarifPath

@@ -161,7 +161,8 @@ attestation:
 | --- | --- | --- | --- |
 | `SKILLSIG_HOME` | env | `$HOME/.skillsig` | 锁文件 / 临时凭据存放目录 |
 | `--ci` | flag | `false` | 出现 UNSIGNED 或 SCOPE-DRIFTED（含跨版本锁漂移）时退出码非零，CI 用 |
-| `--trust` | flag | `false` | 把当前所有 TRUSTED 的 Skill 范围写进 `~/.skillsig/lock.yaml`，作为后续漂移检测的基线（首次信任一份 Skill 语料时跑一次） |
+| `--trust` | flag | `false` | 把当前所有 TRUSTED 的 Skill 范围写进 `~/.skillsig/lock.yaml`，作为后续漂移检测的基线（首次信任一份 Skill 语料时跑一次）。已相对锁基线漂移的 skill **不会**被写入——它判 `SCOPE-DRIFTED` 且保留旧基线，需 `--force-trust` 才重设 |
+| `--force-trust` | flag | `false` | 配合 `--trust`：把已 `SCOPE-DRIFTED` 的 skill 也重设为基线（用变宽后的范围覆盖旧的）。默认关闭，避免 `--trust` 静默把范围升级洗白进锁 |
 | `--json` | flag | `false` | 输出机器可读的 JSON 报告（`verify` / `diff` 都支持），方便 CI 用 `jq` 解析 |
 | `--sarif` | string | `""` | 额外写一份 SARIF 2.1.0 报告到该路径（`-` 表示标准输出，此时 SARIF 是 stdout 上唯一文档），供 GitHub 代码扫描在 PR 上行内标注漂移 |
 | `--no-color` | flag | `false` | 关闭 ANSI 上色，方便 diff |
@@ -225,6 +226,7 @@ warning，干净的 PR 不产生任何标注：
 - [x] **v0.3.0 加固** — glob 覆盖加上 segment 边界（堵住 `api.github.com*` 误盖 `api.github.com.attacker.net` 与 `*` / `**` 混淆），并加 `verify --sarif` 让 GitHub 代码扫描在 PR 上行内标注漂移
 - [x] **v0.4.0** — 让跨版本锁漂移真正在 `verify --ci`（与 SARIF 标注）里生效：此前 `verify` 走的是版本内检查，从不构造 Scanner，跨版本漂移只有 `diff` 能抓——现在 `verify` 直接走锁感知扫描，并新增 `verify --trust` 写基线；同时修掉 `--sarif -` 把表格 / JSON 与 SARIF 拼在 stdout 上导致无法解析的问题
 - [x] **v0.5.0** — 补上最后一条没做边界的轴：**tools** 轴。此前 `Bash(git status*)` 用裸前缀匹配，会把形近的**兄弟命令** `Bash(git statuscheckout --force)` 也当成已覆盖（它只是文本前缀相同、其实是另一个子命令），于是重签的 skill 换个同前缀子命令就能在 `diff` 和 `verify --ci` 里静默逃过 `SCOPE-DRIFTED`。现在通配符做**参数 token 边界**判断（额外文本必须另起一个以空格分隔的 token），与 `fs_write` / `network_egress` 的 `/`、`.` 边界一致——`git status -s` / `--porcelain` 这类细化仍算覆盖，形近兄弟命令则判为增长。四条声明轴（model × tools × fs_write × network_egress）至此对“变宽”有了统一定义
+- [x] **v0.6.0** — 两个校验正确性修复。① **`verify` 真正校验签名 bundle 了**：此前 `runVerify` 从不调用 `verifier` 包——`verifier.VerifySkill`（规范化 manifest、定位 `skillsig.bundle`、验 ed25519 签名）虽已实现却**零调用者**，于是一个范围合规但**没有 bundle**、或 bundle 与 manifest 不匹配的 skill 照样判 `TRUSTED`。攻击者篡改 manifest 覆盖恶意授权、再不带（或带无效）bundle，在冷启动（尚无锁基线）时就能让 `verify --ci` 判 `TRUSTED`——正是 skillsig 要防的供应链向量。现在 `verify` 把签名校验并入每一行：缺 bundle 的把 `TRUSTED` 降为 `UNSIGNED`，bundle 验不过（被篡改/伪造）的降为 `SCOPE-DRIFTED`（并让 `--ci` 失败），keyless bundle 标为待验，`TRUSTED` 现在要求签名有效。② **`verify --trust` 不再静默把漂移的范围重设为基线**：`ScanAndTrust` 此前只跑版本内检查，就把*当前*（可能已变宽的）声明写进锁，于是一个悄悄变宽范围的 skill 被重设为新基线并打印 `TRUSTED`，把漂移永久抹掉。现在 `--trust` 先跑跨版本锁漂移检查：漂移的 skill 判 `SCOPE-DRIFTED` 且保留旧基线（后续 plain `verify` 仍能抓到），要故意重设漂移基线得显式加 `verify --trust --force-trust`
 - [ ] **托管档** — `skillsig.cloud` 托管镜像 + 团队策略 + 飞书/Slack/微信群 webhook 告警
 - [ ] **runtime hook** — 在 host CLI 加载 Skill 之前把声明范围当成沙箱配置应用
 

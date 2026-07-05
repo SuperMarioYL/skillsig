@@ -9,6 +9,39 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.6.0] — 2026-07-06
+
+Two verification-correctness fixes. Until now a `TRUSTED` verdict meant "the
+declared scope matches the runtime grants (and the lock)" but never "the
+signature is valid" — and `verify --trust` could silently launder a
+cross-version scope escalation into the lock. Both are closed.
+
+### Security / Fixed
+- **`verify` now actually checks the signature bundle (high).** `runVerify`
+  never called the `verifier` package — `verifier.VerifySkill` (which
+  canonicalizes the manifest, locates `skillsig.bundle`, and validates the
+  ed25519 signature) was fully implemented but had **zero callers**. So a
+  scope-clean skill with no bundle, or with a bundle that didn't match its
+  manifest, still read `TRUSTED`. An attacker who tampered a manifest to cover a
+  malicious grant and shipped no/invalid bundle passed `verify --ci` `TRUSTED`
+  at cold-start (before any lock baseline exists) — the exact supply-chain
+  vector skillsig exists to catch, and one the README already promised was
+  covered. `verify` now folds signature verification into every row: a missing
+  bundle downgrades `TRUSTED` → `UNSIGNED`, a bundle that doesn't verify (tampered
+  or forged) downgrades `TRUSTED` → `SCOPE-DRIFTED` (and fails `--ci`), keyless
+  bundles surface as pending, and `TRUSTED` now requires a valid signature. A new
+  `internal/verifier/verifier_test.go` covers the signed / no-bundle / tampered /
+  corrupt / keyless cases.
+- **`verify --trust` no longer silently re-baselines a drifted scope (high).**
+  `ScanAndTrust` ran only the in-version check and then recorded the *current*
+  (possibly broadened) declares into the lock for every in-version-`TRUSTED`
+  skill — so a skill that quietly broadened its scope vs. the existing baseline
+  got re-baselined to the broadened scope and printed `TRUSTED`, permanently
+  erasing the drift. `verify --trust` now applies the cross-version lock-drift
+  check first: a drifted skill is reported `SCOPE-DRIFTED` and its baseline is
+  left intact (so a later plain `verify` still catches it). Re-baselining a
+  drifted skill on purpose requires the new explicit `verify --trust --force-trust`.
+
 ## [0.5.0] — 2026-07-03
 
 Closes the last un-boundaried scope axis. The path-shaped axes (`fs_write`,
