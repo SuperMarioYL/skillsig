@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "name": "skillsig",
+  "github": "https://github.com/SuperMarioYL/skillsig",
+  "host": "skillsig.lei6393.com",
+  "lang": { "primary": "zh", "toggle": true },
+  "accent": ["#e97300", "#dc2626", "#8b0000"],
+  "hero": {
+    "eyebrow": { "zh": "签名 · 权限漂移 · CI 门", "en": "Signed · Scope drift · CI gate" },
+    "headline": { "zh": "Skill 权限悄悄变大\n之前先在 CI 拦住", "en": "Stop a skill's scope\ncreeping, in CI" },
+    "sub": {
+      "zh": "skillsig 给 Claude Code Skill 声明范围的 YAML manifest，加 Sigstore keyless 签名，再用锁文件做跨版本权限漂移检测 —— 权限扩张就让 CI 非零退出。",
+      "en": "skillsig gives a Claude Code skill a scope-declaring YAML manifest, Sigstore keyless signing, and lock-file cross-version drift detection — any scope expansion exits CI non-zero."
+    },
+    "command": "go install github.com/SuperMarioYL/skillsig/cmd/skillsig@latest",
+    "ctaGithub": { "zh": "在 GitHub 查看", "en": "View on GitHub" },
+    "scroll": { "zh": "向下滚动", "en": "Scroll" }
+  },
+  "advantages": [
+    {
+      "title": { "zh": "四轴声明范围 manifest", "en": "Manifest over four axes" },
+      "body": {
+        "zh": "每个 Skill 写一份 SKILLSIG.yaml manifest，声明四个轴的意图范围：model · tools · fs_write · network_egress；scope 引擎把它和 SKILL.md 里实际生效的 allowed-tools 做 diff。",
+        "en": "Each skill gets a SKILLSIG.yaml manifest declaring intended scope across four axes — model, tools, fs_write, network_egress — and the scope engine diffs it against the allowed-tools actually in effect in SKILL.md."
+      },
+      "chips": ["› model · tools", "› fs_write · network_egress"]
+    },
+    {
+      "title": { "zh": "跨版本权限漂移检测", "en": "Cross-version drift detection" },
+      "body": {
+        "zh": "scope 引擎把声明白名单和实际授权做 diff（带 Tool(prefix*) 通配语义），再和 ~/.skillsig/lock.yaml 基线比对 —— 某个 Skill 0.3.0 之后悄悄多加一行 Bash(rm -rf …) 就会被 SCOPE-DRIFTED 标出来。",
+        "en": "The scope engine diffs the declared whitelist against the actual grants (with Tool(prefix*) wildcard semantics), then against the ~/.skillsig/lock.yaml baseline — a skill that quietly adds Bash(rm -rf …) after 0.3.0 is flagged SCOPE-DRIFTED."
+      },
+      "chips": ["› lock.yaml baseline", "› Tool(prefix*) wildcards"]
+    },
+    {
+      "title": { "zh": "Sigstore / ed25519 签名", "en": "Sigstore / ed25519 signing" },
+      "body": {
+        "zh": "verifier 校验 ed25519 或 Sigstore keyless 签名 bundle —— 上周审过的那份 manifest，是不是就是刚拉下来的那份，签名说了算。",
+        "en": "The verifier checks an ed25519 or Sigstore keyless signature bundle — whether the manifest you reviewed last week is the one just pulled down is answered by the signature."
+      },
+      "chips": ["› Sigstore keyless", "› ed25519 dev mode"]
+    },
+    {
+      "title": { "zh": "三色判定 · 离线 CI", "en": "Three verdicts, offline CI" },
+      "body": {
+        "zh": "全程本地、不联网，最终一张 TRUSTED / UNSIGNED / SCOPE-DRIFTED 三色表；带 --ci 时一旦范围扩张就返回非零退出码，让 CI 直接 fail。",
+        "en": "Fully local, no network, ending in a TRUSTED / UNSIGNED / SCOPE-DRIFTED table; with --ci any scope expansion returns a non-zero exit code so CI fails outright."
+      },
+      "chips": ["› TRUSTED / UNSIGNED", "› SCOPE-DRIFTED"]
+    }
+  ],
+  "scene": { "kind": "hub-nodes", "nodes": ["model", "tools", "fs_write", "network_egress"] },
+  "cta": {
+    "headline": { "zh": "给你的 Skill 签个名", "en": "Sign your skill" },
+    "sub": {
+      "zh": "MIT 许可，go install 即用；skillsig init 生成 manifest，sign 签名，verify 卡住漂移。",
+      "en": "MIT-licensed, go install and run; skillsig init writes a manifest, sign signs it, verify catches the drift."
+    },
+    "button": { "zh": "在 GitHub 查看", "en": "View on GitHub" }
+  },
+  "footer": { "tag": { "zh": "开源 · MIT", "en": "Open source · MIT" } }
+}
