@@ -529,6 +529,72 @@ func TestRunVerify_TrustDoesNotRebaselineDriftedScope(t *testing.T) {
 	}
 }
 
+// TestRunVerify_TrustDoesNotPinUnsignedScope is the v0.7.0 fix: `verify --trust`
+// must record ONLY skills that verify actually reports TRUSTED — i.e. scope-clean
+// AND with a valid signature bundle. Before the fix the trust-recording path
+// (ScanAndTrust) keyed off the SCOPE verdict alone and never saw the signature
+// downgrade that v0.6.0 folded into the DISPLAY rows, so a manifest-present skill
+// with NO bundle (shown UNSIGNED) got its declared scope silently pinned into the
+// lock — contradicting the code's own "UNSIGNED skills are never recorded"
+// contract and re-opening a laundering path: once such a skill later ships a
+// valid bundle, its (never-vouched-for) broad scope matches the pre-seeded
+// baseline and shows fully TRUSTED with no drift.
+func TestRunVerify_TrustDoesNotPinUnsignedScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SKILLSIG_HOME", home)
+	corpus := t.TempDir()
+
+	// A manifest-present, scope-consistent skill with a broad grant, but NO
+	// signature bundle → verify shows it UNSIGNED.
+	writeSkillNoBundle(t, corpus, "unsigned", "examples/unsigned", []string{"Read", "Bash(rm -rf ~/)"})
+
+	var seed bytes.Buffer
+	if err := runVerify(&seed, verifyOpts{path: corpus, trust: true}); err != nil {
+		t.Fatalf("trust seed: %v", err)
+	}
+	// The row must display UNSIGNED (not TRUSTED) — the signature is missing.
+	if strings.Contains(seed.String(), "TRUSTED") || !strings.Contains(seed.String(), "UNSIGNED") {
+		t.Fatalf("unsigned skill should show UNSIGNED, not TRUSTED; got:\n%s", seed.String())
+	}
+
+	// The lock must NOT have pinned the unsigned skill's scope.
+	lock := filepath.Join(home, "lock.yaml")
+	raw, err := os.ReadFile(lock)
+	if err != nil {
+		// No lock written at all is also a correct outcome (nothing to trust).
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatalf("read lock: %v", err)
+	}
+	if strings.Contains(string(raw), "examples/unsigned") {
+		t.Errorf("verify --trust silently pinned an UNSIGNED skill's scope into the lock:\n%s", raw)
+	}
+}
+
+// TestRunVerify_TrustStillPinsSignedScope guards the inverse of the v0.7.0 fix:
+// a properly SIGNED, scope-clean skill IS still recorded by `verify --trust`, so
+// the signature gate did not over-tighten and break the baseline-seeding the
+// lock-drift gate depends on.
+func TestRunVerify_TrustStillPinsSignedScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SKILLSIG_HOME", home)
+	corpus := t.TempDir()
+	writeSkill(t, corpus, "signed", "examples/signed", []string{"Read", "Bash(git status*)"})
+
+	var seed bytes.Buffer
+	if err := runVerify(&seed, verifyOpts{path: corpus, trust: true}); err != nil {
+		t.Fatalf("trust seed: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "lock.yaml"))
+	if err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if !strings.Contains(string(raw), "examples/signed") {
+		t.Errorf("verify --trust must still pin a SIGNED, scope-clean skill; lock:\n%s", raw)
+	}
+}
+
 // TestRunVerify_LockAwareWithoutTrustStaysTrusted guards the inverse: with an
 // empty lock and no --trust, the same TRUSTED skill stays TRUSTED — the lock
 // path must not invent drift where there is no recorded baseline.

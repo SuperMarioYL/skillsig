@@ -99,8 +99,24 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 	// concatenated with the SARIF JSON and parse as neither).
 	sarifToStdout := opts.sarifPath == "-"
 
+	// Compute each skill dir's SIGNATURE verdict once, up front. The DISPLAY path
+	// folds it into the rows (applySignatureVerdicts); the --trust path uses it to
+	// gate what gets pinned into the lock so `verify --trust` never records a scope
+	// that verify would show as UNSIGNED / SCOPE-DRIFTED for a missing/forged bundle.
+	sigByDir := signatureVerdicts(opts.path)
+
 	scanner := scope.DefaultScanner()
 	scanner.ForceTrust = opts.forceTrust
+	if opts.trust {
+		// Pin only skills whose signature does NOT downgrade them below TRUSTED in
+		// the report: SIGNED and KEYLESS-PENDING stay TRUSTED (keyless is annotated
+		// but not failed in this build, matching the display), while NO-BUNDLE and
+		// BAD-SIGNATURE are shown UNSIGNED / SCOPE-DRIFTED and must never be pinned.
+		scanner.TrustRecordGate = func(dir string) bool {
+			v := sigByDir[dir]
+			return v == verifier.VerdictSigned || v == verifier.VerdictKeylessPending
+		}
+	}
 	var results []scope.Result
 	if opts.trust {
 		// Seed (or refresh) the lock baseline from the currently-TRUSTED corpus,
@@ -120,7 +136,7 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 	// the manifest to cover a malicious grant, ship no/invalid bundle, and still
 	// pass verify TRUSTED at cold-start (before any lock baseline exists) — the
 	// exact supply-chain vector skillsig exists to catch.
-	results = applySignatureVerdicts(opts.path, results)
+	results = applySignatureVerdicts(sigByDir, results)
 
 	if len(results) == 0 {
 		if !sarifToStdout {
@@ -172,11 +188,35 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 	return nil
 }
 
+// signatureVerdicts walks every skill dir under root (same sorted order the
+// scanner uses) and maps each to its bundle-signature verdict from
+// verifier.VerifySkill. It is computed once per verify invocation and shared by
+// both the DISPLAY path (applySignatureVerdicts) and the --trust record gate, so
+// the two never disagree on which skills carry a valid attestation. A malformed
+// skill is skipped (no verifiable signature); its dir is simply absent from the
+// map. A walk error yields a nil map, and callers treat a missing dir as "no
+// positive signature" (fail-closed for the gate, no-op for the display path).
+func signatureVerdicts(root string) map[string]verifier.Verdict {
+	dirs, err := manifest.FindSkillDirs(root)
+	if err != nil {
+		return nil
+	}
+	sort.Strings(dirs)
+	sigByDir := make(map[string]verifier.Verdict, len(dirs))
+	for _, d := range dirs {
+		sk, err := manifest.ParseSkill(d)
+		if err != nil {
+			continue
+		}
+		sigByDir[sk.Dir] = verifier.VerifySkill(sk).Verdict
+	}
+	return sigByDir
+}
+
 // applySignatureVerdicts folds bundle-signature verification into the scope
-// results. It re-walks the same skill dirs the scanner did (same sorted order),
-// runs verifier.VerifySkill on each, and downgrades a scope-TRUSTED row whose
-// signature is missing or invalid — so TRUSTED means BOTH "declared scope
-// matches runtime grants (and lock)" AND "the attestation is valid."
+// results, using the precomputed sigByDir map, and downgrades a scope-TRUSTED
+// row whose signature is missing or invalid — so TRUSTED means BOTH "declared
+// scope matches runtime grants (and lock)" AND "the attestation is valid."
 //
 // Downgrade rules (only ever tighten a verdict, never loosen it):
 //   - NO-BUNDLE      → a TRUSTED row becomes UNSIGNED (there is no attestation).
@@ -188,27 +228,13 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 //   - SIGNED          → no change; the scope verdict already stands on its own.
 //
 // A row that scope already marked UNSIGNED / SCOPE-DRIFTED is left untouched —
-// it is already failing for a stronger reason.
+// it is already failing for a stronger reason. A dir absent from sigByDir (a
+// malformed skill) keeps its scope verdict unchanged.
 //
-// If the tree can't be re-walked (it was walked fine moments ago by the scanner,
-// so this is defensive), the original results pass through unchanged.
-func applySignatureVerdicts(root string, results []scope.Result) []scope.Result {
-	dirs, err := manifest.FindSkillDirs(root)
-	if err != nil {
-		return results
-	}
-	sort.Strings(dirs)
-
-	// Map each skill dir → its signature verdict.
-	sigByDir := make(map[string]verifier.Verdict, len(dirs))
-	for _, d := range dirs {
-		sk, err := manifest.ParseSkill(d)
-		if err != nil {
-			continue // a malformed skill has no verifiable signature; leave its scope row alone
-		}
-		sigByDir[sk.Dir] = verifier.VerifySkill(sk).Verdict
-	}
-
+// sigByDir is the per-dir signature verdict map (see signatureVerdicts). It is
+// computed once by the caller so the DISPLAY path here and the --trust gate agree
+// on exactly which skills have a valid attestation.
+func applySignatureVerdicts(sigByDir map[string]verifier.Verdict, results []scope.Result) []scope.Result {
 	for i, r := range results {
 		if r.Verdict != scope.VerdictTrusted {
 			continue // only a scope-TRUSTED row can be downgraded by a bad signature

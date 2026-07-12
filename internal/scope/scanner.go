@@ -59,6 +59,19 @@ type Scanner struct {
 	// to the CLI's `verify --trust --force-trust`.
 	ForceTrust bool
 
+	// TrustRecordGate, when non-nil, is consulted by ScanAndTrust before pinning
+	// a skill's scope into the lock: the skill's directory is passed and its
+	// scope is recorded only if the gate returns true. The scope package can only
+	// see the scope verdict (declared-vs-runtime match); the SIGNATURE verdict is
+	// computed one layer up (cmd/skillsig via internal/verifier), so the CLI
+	// injects it here. Without the gate `verify --trust` would pin the scope of a
+	// skill that verify DISPLAYS as UNSIGNED (no bundle) or SCOPE-DRIFTED (forged
+	// bundle) — laundering a never-vouched-for scope into the lock and breaking
+	// the "you only pin scopes you actually vouch for" contract. A nil gate
+	// records every scope-TRUSTED skill (back-compat for callers with no
+	// signature layer).
+	TrustRecordGate func(dir string) bool
+
 	mu   sync.Mutex
 	lock *LockFile
 }
@@ -224,6 +237,14 @@ func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 		default:
 			// UNSIGNED / anything else is never pinned — you only trust scopes you
 			// actually vouch for.
+			continue
+		}
+		// The scope verdict says the skill would be recorded; the injected gate
+		// (if any) has the final say. It carries the SIGNATURE verdict the scope
+		// package cannot see, so a skill that verify displays as UNSIGNED (missing
+		// bundle) or SCOPE-DRIFTED (forged bundle) is NOT pinned even though its
+		// declared scope matches its runtime grants.
+		if s.TrustRecordGate != nil && !s.TrustRecordGate(sk.Dir) {
 			continue
 		}
 		lock.Entries[sk.Manifest.SkillID] = LockEntry{

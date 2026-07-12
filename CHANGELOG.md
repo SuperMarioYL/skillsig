@@ -9,6 +9,41 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.7.0] — 2026-07-13
+
+One verification-correctness fix in the same trust/lock class the two v0.6.0
+fixes opened — the completing gap they missed. v0.6.0 made a `TRUSTED` verdict
+require a valid signature in what `verify` *displays* and fails on in `--ci`,
+but the `verify --trust` *recording* path still decided what to pin from the
+scope check alone.
+
+### Security / Fixed
+- **`verify --trust` no longer pins the scope of an UNSIGNED or forged-bundle
+  skill into the lock (high).** v0.6.0 folded signature verification into the
+  verify report rows (`applySignatureVerdicts`), so a scope-clean skill with no
+  bundle shows `UNSIGNED` and one with a bundle that doesn't verify shows
+  `SCOPE-DRIFTED`. But `Scanner.ScanAndTrust` — the code `verify --trust` uses to
+  write `~/.skillsig/lock.yaml` — chose what to pin purely from the **scope**
+  verdict, which the `scope` package computes with no knowledge of the signature.
+  So a skill with a manifest and matching scope but **no signature bundle** was
+  displayed `UNSIGNED` yet still had its declared scope silently recorded into
+  the lock — contradicting `ScanAndTrust`'s own "UNSIGNED skills are never
+  recorded — you only ever pin scopes you actually vouch for" contract, and
+  re-opening a laundering path: once that never-vouched skill later ships any
+  valid bundle, its (never-attested) broad scope matches the pre-seeded baseline
+  and reads fully `TRUSTED` with no drift. Reproduced with a bundle-less skill
+  declaring `Bash(rm -rf ~/)` — `verify --trust` printed `UNSIGNED` but wrote
+  that `rm -rf ~/` scope into the lock. **Fix:** the trust path is now gated on
+  the signature verdict. `Scanner` gains a `TrustRecordGate` hook (nil keeps the
+  old record-every-scope-TRUSTED behaviour); `ScanAndTrust` consults it before
+  pinning any entry, on both the clean-`TRUSTED` and the `--force-trust`
+  re-baseline paths. `verify` computes each skill's signature verdict once (new
+  shared `signatureVerdicts` helper) and, under `--trust`, pins only `SIGNED` /
+  `KEYLESS-PENDING` skills — exactly the set `verify` shows as `TRUSTED` — so
+  `NO-BUNDLE` and `BAD-SIGNATURE` skills are never recorded. Two new tests in
+  `cmd/skillsig/verify_test.go` cover both directions (an unsigned skill is left
+  out of the lock; a properly signed skill is still pinned).
+
 ## [0.6.0] — 2026-07-06
 
 Two verification-correctness fixes. Until now a `TRUSTED` verdict meant "the
