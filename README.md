@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/SuperMarioYL/skillsig/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/SuperMarioYL/skillsig/ci.yml?branch=main&label=CI&logo=github"/></a>
   <a href="https://github.com/SuperMarioYL/skillsig/releases"><img alt="Release" src="https://img.shields.io/github/v/release/SuperMarioYL/skillsig?include_prereleases&sort=semver&label=release"/></a>
-  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-2ea44f"/></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2ea44f"/></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00ADD8?logo=go&logoColor=white"/>
   <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-ready-7C3AED"/>
   <img alt="Skill" src="https://img.shields.io/badge/Skill-attested-DC2626"/>
