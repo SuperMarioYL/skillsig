@@ -269,11 +269,23 @@ func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 // Save writes the lock file back to disk. Called by `verify --trust` (via
 // ScanAndTrust) and by tests. A plain `verify` stays read-only against the lock
 // so the first-run side effects are predictable and opt-in.
+//
+// The write is ATOMIC: we marshal into a temp file in the same dir then
+// os.Rename it onto LockPath (mirroring cmd/skillsig writeBundle, which does
+// the same for the skillsig.bundle sidecar "to avoid leaving a half-written
+// bundle on disk"). A bare os.WriteFile truncates then writes; if the process
+// is killed (or the disk fills) mid-write during `verify --trust`, the lock is
+// left half-written and the next `verify` / `verify --ci` calls loadLock ->
+// yaml.Unmarshal on the partial bytes, which fails and breaks the entire CI
+// merge gate until ~/.skillsig/lock.yaml is manually recovered. os.Rename is
+// atomic on the same filesystem, so the lock is either the previous good state
+// or the complete new state — never a partial.
 func (s *Scanner) Save(lock *LockFile) error {
 	if s.LockPath == "" {
 		return errors.New("scanner: empty LockPath")
 	}
-	if err := os.MkdirAll(filepath.Dir(s.LockPath), 0o755); err != nil {
+	dir := filepath.Dir(s.LockPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	if lock.Version == 0 {
@@ -283,7 +295,26 @@ func (s *Scanner) Save(lock *LockFile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.LockPath, data, 0o644)
+	tmp, err := os.CreateTemp(dir, ".skillsig-lock-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create tempfile: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write tempfile: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close tempfile: %w", err)
+	}
+	if err := os.Rename(tmpName, s.LockPath); err != nil {
+		cleanup()
+		return fmt.Errorf("rename to %s: %w", s.LockPath, err)
+	}
+	return nil
 }
 
 // applyLockDrift upgrades a per-skill Result from "inside-version OK" to

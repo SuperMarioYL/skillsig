@@ -188,27 +188,106 @@ func writeSidecar(dest string, data []byte, force bool) error {
 	return os.WriteFile(dest, data, 0o644)
 }
 
-// appendInline tacks a fenced ```yaml block onto SKILL.md, separated from the
-// existing body by a blank line. If a sidecar already exists in the body the
-// caller has already gated on --force; we still defend against double-append
-// here by scanning for a "skillsig:" fenced block and rewriting it in place.
+// appendInline writes a fenced ```yaml skillsig manifest block into SKILL.md.
+//
+// Without --force, a body that already contains a fenced "skillsig:" block is
+// rejected (the caller has already gated on --force, but we defend here too).
+//
+// With --force, the FIRST existing fenced "skillsig:" block is REPLACED IN
+// PLACE — its opening fence through its closing fence is spliced out and the
+// regenerated block is written at the same position. This is the fix for the
+// stale-block bug: previously --force skipped the "already contains" guard and
+// then unconditionally APPENDED a second fenced block, so the file carried two
+// skillsig blocks and extractSidecar (internal/manifest/parse.go) — which
+// returns the FIRST fenced block whose content begins with "skillsig:" — kept
+// reading the stale manifest, leaving the freshly regenerated one as dead text.
+// The doc comment here used to claim it "rewrites it in place"; now it does.
+//
+// If no fenced "skillsig:" block exists, the new block is appended at the end
+// of the body (separated by a blank line and a header), matching the original
+// first-run behavior.
 func appendInline(dest string, manifestYAML []byte, force bool) error {
 	raw, err := os.ReadFile(dest)
 	if err != nil {
 		return err
 	}
-	existing := string(raw)
-	if strings.Contains(existing, "skillsig:") && !force {
+	body := string(raw)
+
+	start, end, hasBlock := findSkillsigFence(body)
+	if hasBlock && !force {
 		return fmt.Errorf("%s already contains a skillsig block; pass --force to rewrite", dest)
 	}
 
+	block := buildInlineBlock(manifestYAML)
+
+	var out string
+	if hasBlock {
+		// Replace the old fenced skillsig block in place: keep everything before
+		// the opening fence and after the closing fence, and splice the regenerated
+		// block into the same position. The file ends up with exactly one
+		// skillsig block and extractSidecar picks up the new content.
+		out = body[:start] + block + body[end:]
+	} else {
+		// No existing block: append at the end, separated by a blank line and a
+		// header so the manifest is visually distinct from the skill body.
+		out = strings.TrimRight(body, "\n") + "\n\n## skillsig manifest\n\n" + block
+	}
+	return os.WriteFile(dest, []byte(out), 0o644)
+}
+
+// buildInlineBlock renders the fenced ```yaml block for a skillsig manifest,
+// including the trailing newline. It is the unit appendInline either appends or
+// splices over an existing block, so both paths produce the identical fenced
+// shape that extractSidecar recognizes.
+func buildInlineBlock(manifestYAML []byte) string {
 	var b strings.Builder
-	b.WriteString(strings.TrimRight(existing, "\n"))
-	b.WriteString("\n\n## skillsig manifest\n\n```yaml\n")
+	b.WriteString("```yaml\n")
 	b.Write(manifestYAML)
 	if !strings.HasSuffix(string(manifestYAML), "\n") {
 		b.WriteByte('\n')
 	}
 	b.WriteString("```\n")
-	return os.WriteFile(dest, []byte(b.String()), 0o644)
+	return b.String()
+}
+
+// findSkillsigFence returns the byte offsets [start, end) of the first fenced
+// code block in body whose content begins with "skillsig:", including the
+// opening and closing fence lines (and the closing fence's trailing newline if
+// present). ok is false when no such block exists.
+//
+// It mirrors the extraction logic in extractSidecar
+// (internal/manifest/parse.go) so the block appendInline replaces is exactly the
+// block ParseSkill will read back on the next parse — same fence detection
+// (line whose TrimSpace begins with "```"), same content accumulation, same
+// "first non-blank key begins with skillsig:" predicate.
+func findSkillsigFence(body string) (start, end int, ok bool) {
+	lines := strings.SplitAfter(body, "\n")
+	inFence := false
+	var fence strings.Builder
+	fenceStart := 0
+	off := 0
+	for _, ln := range lines {
+		trim := strings.TrimSpace(ln)
+		if !inFence {
+			if strings.HasPrefix(trim, "```") {
+				inFence = true
+				fence.Reset()
+				fenceStart = off
+			}
+		} else {
+			if strings.HasPrefix(trim, "```") {
+				// Closing fence: does this block's content begin with "skillsig:"?
+				candidate := fence.String()
+				head := strings.TrimLeft(candidate, " \t\n\r")
+				if strings.HasPrefix(head, "skillsig:") {
+					return fenceStart, off + len(ln), true
+				}
+				inFence = false
+			} else {
+				fence.WriteString(ln)
+			}
+		}
+		off += len(ln)
+	}
+	return 0, 0, false
 }
