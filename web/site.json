@@ -3,61 +3,124 @@
   "name": "skillsig",
   "github": "https://github.com/SuperMarioYL/skillsig",
   "host": "skillsig.lei6393.com",
-  "lang": { "primary": "zh", "toggle": true },
-  "accent": ["#e97300", "#dc2626", "#8b0000"],
+  "lang": {
+    "primary": "zh",
+    "toggle": true
+  },
+  "accent": [
+    "#e97300",
+    "#dc2626",
+    "#8b0000"
+  ],
   "hero": {
-    "eyebrow": { "zh": "装前看清 · 更新防变宽 · 流水线兜底", "en": "See before install · Catch the creep · Pipeline fails it" },
-    "headline": { "zh": "你信的 Skill 悄悄加了危险权限\n流水线先替你拦下来", "en": "A skill you trust quietly widens its reach\nyour pipeline catches it before you do" },
+    "eyebrow": {
+      "zh": "装前看清 · 更新防变宽 · 流水线兜底",
+      "en": "See before install · Catch the creep · Pipeline fails it"
+    },
+    "headline": {
+      "zh": "你信的 Skill 悄悄加了危险权限\n流水线先替你拦下来",
+      "en": "A skill you trust quietly widens its reach\nyour pipeline catches it before you do"
+    },
     "sub": {
       "zh": "给团队里每一个 Claude Code Skill 配一道闸：装之前看清它能碰你的哪些文件、网络、命令；更新后一旦它想多拿一点权限，流水线直接挂掉，而不是事后才让你发现。",
       "en": "Give every Claude Code skill in your team a gate: see which of your files, network, and shell it can touch before you install; and the moment a new version reaches for more than you signed off, the pipeline fails — not you, after the fact."
     },
     "command": "go install github.com/SuperMarioYL/skillsig/cmd/skillsig@latest",
-    "ctaGithub": { "zh": "在 GitHub 查看", "en": "View on GitHub" },
-    "scroll": { "zh": "向下滚动", "en": "Scroll" }
+    "ctaGithub": {
+      "zh": "在 GitHub 查看",
+      "en": "View on GitHub"
+    },
+    "scroll": {
+      "zh": "向下滚动",
+      "en": "Scroll"
+    }
   },
   "advantages": [
     {
-      "title": { "zh": "一份清单，写清它能碰什么", "en": "One list: exactly what it can touch" },
+      "title": {
+        "zh": "一份清单，写清它能碰什么",
+        "en": "One list: exactly what it can touch"
+      },
       "body": {
         "zh": "每个 Skill 配一份声明清单，白纸黑字写明它可以读写的文件、能不能联网、能跑哪些命令、面向哪个模型；装之前一屏看完，不用通读整份 prompt 才知道它到底会干什么。",
         "en": "Each skill carries a declared list — plainly stating which files it can read and write, whether it goes online, which commands it can run, and which model it targets; you see it on one screen before installing, no need to read the whole prompt to know what it will actually do."
       },
-      "chips": ["› 文件 · 网络 · 命令 · 模型", "› 装前一屏看完"]
+      "chips": [
+        "› 文件 · 网络 · 命令 · 模型",
+        "› 装前一屏看完"
+      ]
     },
     {
-      "title": { "zh": "更新后偷偷加权限，当场抓到", "en": "A sneaky permission bump, caught on update" },
+      "title": {
+        "zh": "更新后偷偷加权限，当场抓到",
+        "en": "A sneaky permission bump, caught on update"
+      },
       "body": {
         "zh": "上周你审过、信过的那个 Skill，今天一个新版本把删文件、读密钥、外联网络的权限悄悄塞了进来——不用你逐行比对，它会被直接标红，流水线当场挂掉。",
         "en": "The skill you reviewed and trusted last week ships a new version that quietly slips in delete-files, read-your-keys, or phone-home permission — no line-by-line diffing needed, it is flagged red and the pipeline fails on the spot."
       },
-      "chips": ["› 新版本多拿的，全标红", "› 不用自己逐行比对"]
+      "chips": [
+        "› 新版本多拿的，全标红",
+        "› 不用自己逐行比对"
+      ]
     },
     {
-      "title": { "zh": "跑的这份，真是你审过的那份吗", "en": "Is the one running the one you reviewed?" },
+      "title": {
+        "zh": "跑的这份，真是你审过的那份吗",
+        "en": "Is the one running the one you reviewed?"
+      },
       "body": {
         "zh": "签名替你回答一个问题：上周过目、点头放行的那个 Skill，和今天机器上拉下来的那个，是不是一字不差的同一份。不是，就别跑。",
         "en": "A signature answers one question: is the skill you eyeballed and approved last week the exact one that just landed on your machine, byte for byte. If not, do not run it."
       },
-      "chips": ["› 签名说了算，不靠记忆", "› 改一个字就露馅"]
+      "chips": [
+        "› 签名说了算，不靠记忆",
+        "› 改一个字就露馅"
+      ]
     },
     {
-      "title": { "zh": "一个能挡住流水线的红绿灯", "en": "A traffic light your pipeline can block on" },
+      "title": {
+        "zh": "一个能挡住流水线的红绿灯",
+        "en": "A traffic light your pipeline can block on"
+      },
       "body": {
         "zh": "每个 Skill 最后落到一个明确判定：放行、没签名、还是越权变宽。只要有没签名或越权的，流水线直接挂掉——全程在你本机跑完，不联网、不依赖外部服务。",
         "en": "Every skill ends in a clear verdict: trusted, unsigned, or scope-widened. One unsigned or widened skill and the pipeline fails outright — all on your own machine, no network, no external service."
       },
-      "chips": ["› 放行 / 没签名 / 越权", "› 一个越权，流水线就挂"]
+      "chips": [
+        "› 放行 / 没签名 / 越权",
+        "› 一个越权，流水线就挂"
+      ]
     }
   ],
-  "scene": { "kind": "hub-nodes", "nodes": ["model", "tools", "fs_write", "network_egress"] },
+  "scene": {
+    "kind": "hub-nodes",
+    "nodes": [
+      "model",
+      "tools",
+      "fs_write",
+      "network_egress"
+    ]
+  },
   "cta": {
-    "headline": { "zh": "给团队装的 Skill，配一道闸", "en": "Put a gate on your team's skills" },
+    "headline": {
+      "zh": "给团队装的 Skill，配一道闸",
+      "en": "Put a gate on your team's skills"
+    },
     "sub": {
       "zh": "MIT 许可，一条命令装好：看清每个 Skill 能碰什么，更新后自动拦住偷偷变宽的权限。",
       "en": "MIT-licensed, one command to install: see what each skill can touch, and auto-block any sneaky scope creep on update."
     },
-    "button": { "zh": "在 GitHub 查看", "en": "View on GitHub" }
+    "button": {
+      "zh": "在 GitHub 查看",
+      "en": "View on GitHub"
+    }
   },
-  "footer": { "tag": { "zh": "开源 · MIT", "en": "Open source · MIT" } }
+  "footer": {
+    "tag": {
+      "zh": "开源 · MIT",
+      "en": "Open source · MIT"
+    }
+  },
+  "content_version": "v0.9.0"
 }
