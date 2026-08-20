@@ -59,6 +59,41 @@ func TestScopeGrowth_NewPathOutsideGlobIsGrowth(t *testing.T) {
 	}
 }
 
+// TestScopeGrowth_ModelRemovalIsNotGrowthButSwapIs is the v0.9.0 fix
+// (fix-model-removal-flagged-as-scope-growth): the model axis used to read
+// `curr.Model != prev.Model && prev.Model != ""` with NO `curr.Model != ""`
+// guard, so REMOVING declares.model (curr.Model == "") was reported as scope
+// growth — and applyLockDrift then upgraded a TRUSTED row to SCOPE-DRIFTED,
+// blocking a non-escalating (narrowing) change. That violated the "a removed
+// entry is NOT growth, only additions are" contract the tools / fs_write /
+// network_egress axes honor (they early-return on an empty curr slice). The
+// guard now also checks `curr.Model != ""`, so a genuine model swap (A→B) still
+// surfaces for re-attestation while a removal stops being flagged.
+func TestScopeGrowth_ModelRemovalIsNotGrowthButSwapIs(t *testing.T) {
+	prev := manifest.Declares{Model: "gpt-4"}
+
+	// (a) Removing declares.model (curr.Model == "") is NOT growth: a narrowing
+	//     change must not be flagged as SCOPE-DRIFTED.
+	currRemoved := manifest.Declares{Model: ""}
+	for _, entry := range scopeGrowth(prev, currRemoved) {
+		if strings.HasPrefix(entry, "model:") {
+			t.Errorf("removing declares.model should not be flagged as growth; got %q", entry)
+		}
+	}
+
+	// (b) A genuine model swap (gpt-4 → claude) still surfaces for re-attestation.
+	currSwap := manifest.Declares{Model: "claude"}
+	var sawModel bool
+	for _, entry := range scopeGrowth(prev, currSwap) {
+		if strings.HasPrefix(entry, "model:") {
+			sawModel = true
+		}
+	}
+	if !sawModel {
+		t.Errorf("a model swap (gpt-4 → claude) should be flagged as growth; got %v", scopeGrowth(prev, currSwap))
+	}
+}
+
 // TestScanner_SaveWritesAtomicValidLock is the v0.8.0 fix (fix-lock-write-non-
 // atomic): Save must write ~/.skillsig/lock.yaml atomically (temp file in the
 // same dir + os.Rename, mirroring cmd/skillsig writeBundle) so a crash mid-write

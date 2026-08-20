@@ -353,7 +353,7 @@ func applyLockDrift(r Result, sk *manifest.Skill, lock *LockFile) Result {
 // so the diff/lock path and the verify path agree on what "broader" means.
 func scopeGrowth(prev, curr manifest.Declares) []string {
 	var out []string
-	if curr.Model != prev.Model && prev.Model != "" {
+	if curr.Model != prev.Model && prev.Model != "" && curr.Model != "" {
 		out = append(out, fmt.Sprintf("model: %s → %s", prev.Model, curr.Model))
 	}
 	if added := addedTools(prev.Tools, curr.Tools); len(added) > 0 {

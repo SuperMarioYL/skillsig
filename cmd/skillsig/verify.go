@@ -108,13 +108,15 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 	scanner := scope.DefaultScanner()
 	scanner.ForceTrust = opts.forceTrust
 	if opts.trust {
-		// Pin only skills whose signature does NOT downgrade them below TRUSTED in
-		// the report: SIGNED and KEYLESS-PENDING stay TRUSTED (keyless is annotated
-		// but not failed in this build, matching the display), while NO-BUNDLE and
-		// BAD-SIGNATURE are shown UNSIGNED / SCOPE-DRIFTED and must never be pinned.
+		// Pin only skills whose signature leaves them TRUSTED in the report.
+		// SIGNED stays TRUSTED; KEYLESS-PENDING is downgraded to UNSIGNED by
+		// applySignatureVerdicts (this build's keyless signer is not wired, so any
+		// keyless bundle verify encounters is a forgery) and must not be pinned as
+		// the drift baseline. NO-BUNDLE and BAD-SIGNATURE are shown UNSIGNED /
+		// SCOPE-DRIFTED and are likewise never pinned.
 		scanner.TrustRecordGate = func(dir string) bool {
 			v := sigByDir[dir]
-			return v == verifier.VerdictSigned || v == verifier.VerdictKeylessPending
+			return v == verifier.VerdictSigned
 		}
 	}
 	var results []scope.Result
@@ -223,8 +225,13 @@ func signatureVerdicts(root string) map[string]verifier.Verdict {
 //   - BAD-SIGNATURE  → a TRUSTED row becomes SCOPE-DRIFTED (the bundle is present
 //     but does not verify against the declared scope — a tampered/forged
 //     attestation is a supply-chain red flag, so it blocks --ci like drift).
-//   - KEYLESS-PENDING → left as-is (the dev build can't verify Fulcio bundles;
-//     annotate but don't fail, matching verifier.ErrKeylessNotWired semantics).
+//   - KEYLESS-PENDING → a TRUSTED row becomes UNSIGNED. This build's keyless
+//     signer is not wired (skillsig sign --keyless returns ErrFulcioNotWired),
+//     so any keyless-shaped bundle verify encounters was never produced by this
+//     binary — it is a forgery and must read UNSIGNED, fail --ci, and never be
+//     pinned by --trust. (The verifier still surfaces VerdictKeylessPending so a
+//     future keyless-enabled build can verify it instead; only the CLI display /
+//     trust / --ci decisions change here.)
 //   - SIGNED          → no change; the scope verdict already stands on its own.
 //
 // A row that scope already marked UNSIGNED / SCOPE-DRIFTED is left untouched —
@@ -247,7 +254,8 @@ func applySignatureVerdicts(sigByDir map[string]verifier.Verdict, results []scop
 			results[i].Verdict = scope.VerdictScopeDrifted
 			results[i].Details = "signature bundle does not verify against the declared scope (tampered or forged attestation)"
 		case verifier.VerdictKeylessPending:
-			results[i].Details = r.Details + " [keyless bundle — signature not verified in this build]"
+			results[i].Verdict = scope.VerdictUnsigned
+			results[i].Details = "keyless bundle not verified in this build"
 		default:
 			// VerdictSigned (or an unknown dir with no manifest) → keep TRUSTED.
 		}

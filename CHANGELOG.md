@@ -9,6 +9,47 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.9.0] — 2026-08-21
+
+Two verification-correctness fixes. One closes a supply-chain bypass where a
+forged keyless-shaped bundle read `TRUSTED` (and passed `verify --ci`, and could
+be pinned by `verify --trust` as the drift baseline); the other stops a
+narrowing change (removing `declares.model`) from being falsely flagged as
+scope growth.
+
+### Security / Fixed
+- **A forged keyless bundle no longer reads TRUSTED (high).** A keyless-shaped
+  bundle (`verificationMaterial.publicKey` empty, `certificate` non-empty) still
+  reaches `VerdictKeylessPending` at the verifier level (unchanged), but the CLI
+  path used to leave the row `TRUSTED` — `applySignatureVerdicts` only annotated
+  `Details` — so a forged bundle read `TRUSTED` and passed `verify --ci`. Since
+  `skillsig sign --keyless` returns `ErrFulcioNotWired` in this build, any
+  keyless bundle `verify` encounters is a forgery. **Fix:**
+  `applySignatureVerdicts` now downgrades `VerdictKeylessPending` to `UNSIGNED`
+  (set `scope.VerdictUnsigned` + `"keyless bundle not verified in this build"`),
+  so `verify --ci` fails and the row cannot pass. The `--trust` gate
+  (`TrustRecordGate`) now pins ONLY `VerdictSigned` (was: `VerdictSigned ||
+  VerdictKeylessPending`), so a never-verified keyless scope is never pinned into
+  `~/.skillsig/lock.yaml` as the drift baseline. The verifier-level
+  `VerdictKeylessPending` (`internal/verifier/verifier.go`) stays so a future
+  keyless-enabled build can still surface it; only the CLI display / trust /
+  `--ci` decisions change. New `cmd/skillsig/verify_test.go` test
+  `TestRunVerify_KeylessForgedBundleIsUnsignedNotTrusted` covers all three
+  directions (row is UNSIGNED not TRUSTED; `--ci` fails with `ErrCIDrift`;
+  `--trust` does not pin it).
+- **Removing `declares.model` is no longer falsely reported as scope growth
+  (high).** `scopeGrowth`'s model axis read `curr.Model != prev.Model &&
+  prev.Model != ""` with NO `curr.Model != ""` guard, so REMOVING
+  `declares.model` (`curr.Model == ""`) was reported as scope growth — and
+  `applyLockDrift` then upgraded a `TRUSTED` row to `SCOPE-DRIFTED`, blocking a
+  non-escalating (narrowing) change. This violated the "a removed entry is NOT
+  growth, only additions are" contract the `tools` / `fs_write` /
+  `network_egress` axes honor (they early-return on an empty `curr`). **Fix:**
+  add `&& curr.Model != ""` to the guard. A genuine model swap (A→B) still
+  surfaces for re-attestation; only removal stops being flagged. New
+  `internal/scope/scanner_test.go` test
+  `TestScopeGrowth_ModelRemovalIsNotGrowthButSwapIs` covers both directions.
+
 ## [0.7.0] — 2026-07-13
 
 One verification-correctness fix in the same trust/lock class the two v0.6.0

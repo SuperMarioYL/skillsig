@@ -422,6 +422,32 @@ func signSkillBundle(t *testing.T, dir string) {
 	}
 }
 
+// writeKeylessBundle writes a hand-crafted keyless-shaped bundle (certificate
+// set, publicKey empty, no messageSignature/digest) next to the skill — the
+// shape a forger would ship to claim a Fulcio attestation this build cannot
+// verify. It mirrors the keyless bundle in internal/verifier/verifier_test.go
+// so the verifier resolves VerdictKeylessPending, which applySignatureVerdicts
+// then downgrades to UNSIGNED (v0.9.0). skillsig sign --keyless returns
+// ErrFulcioNotWired in this build, so any keyless bundle verify encounters was
+// never produced by this binary.
+func writeKeylessBundle(t *testing.T, dir string) {
+	t.Helper()
+	b := &signer.Bundle{
+		MediaType: signer.MediaType,
+		VerificationMaterial: signer.VerificationMaterial{
+			Certificate: "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+			Identity:    signer.Identity{Issuer: "https://oauth2.sigstore.dev/auth", Subject: "user@example.com"},
+		},
+	}
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal keyless bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skillsig.bundle"), append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write keyless bundle: %v", err)
+	}
+}
+
 // TestRunVerify_TrustThenLockDriftFailsCI is the headline fix for v0.4.0: the
 // lock-aware drift path now runs through `verify` (not only `diff`). After
 // `verify --trust` records a TRUSTED skill's scope, re-signing that skill with a
@@ -592,6 +618,74 @@ func TestRunVerify_TrustStillPinsSignedScope(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "examples/signed") {
 		t.Errorf("verify --trust must still pin a SIGNED, scope-clean skill; lock:\n%s", raw)
+	}
+}
+
+// TestRunVerify_KeylessForgedBundleIsUnsignedNotTrusted is the v0.9.0 fix
+// (fix-keyless-pending-forged-bundle-bypass): a keyless-shaped bundle
+// (certificate set, publicKey empty) resolves VerdictKeylessPending at the
+// verifier level (internal/verifier — unchanged), but the CLI path used to
+// leave the row TRUSTED (applySignatureVerdicts only annotated Details), so a
+// forged bundle read TRUSTED and passed verify --ci — and verify --trust could
+// pin its never-verified scope into ~/.skillsig/lock.yaml as the drift
+// baseline. Now:
+//   - applySignatureVerdicts downgrades VerdictKeylessPending to UNSIGNED
+//     (was: left TRUSTED, only annotated), so a forged keyless bundle fails
+//     verify --ci; and
+//   - the --trust gate pins ONLY VerdictSigned (was: VerdictSigned ||
+//     VerdictKeylessPending), so a never-verified keyless scope is never pinned.
+//
+// skillsig sign --keyless returns ErrFulcioNotWired in this build, so any
+// keyless bundle verify encounters is a forgery. The verifier-level
+// VerdictKeylessPending stays so a future keyless-enabled build can still
+// surface it; only the CLI display / trust / --ci decisions change. Uses the
+// same hand-crafted keyless bundle shape as TestVerifySkill_KeylessBundleIsPending
+// (certificate set, publicKey empty, NO signature/digest/messageSignature).
+func TestRunVerify_KeylessForgedBundleIsUnsignedNotTrusted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SKILLSIG_HOME", home)
+	corpus := t.TempDir()
+	// A scope-clean skill (allowed-tools == declares.tools) carrying a
+	// keyless-shaped (forged) bundle: the scope layer says TRUSTED, so the
+	// signature layer is what must downgrade it.
+	dir := writeSkillNoBundle(t, corpus, "keyless-forged", "examples/keyless-forged", []string{"Read", "Bash(git status*)"})
+	writeKeylessBundle(t, dir)
+
+	// (a) After applySignatureVerdicts the row is UNSIGNED, not TRUSTED.
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if strings.Contains(buf.String(), "TRUSTED") {
+		t.Errorf("a forged keyless bundle must NOT read TRUSTED; got:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "UNSIGNED") {
+		t.Errorf("a forged keyless bundle must read UNSIGNED; got:\n%s", buf.String())
+	}
+
+	// (b) The --ci gate fails (ErrCIDrift) on the UNSIGNED row.
+	var ci bytes.Buffer
+	if err := runVerify(&ci, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("verify --ci should fail (ErrCIDrift) on a forged keyless bundle; got err=%v\n%s", err, ci.String())
+	}
+
+	// (c) The --trust gate does NOT pin the forged keyless skill's scope: the
+	//     lock's record pin set must exclude it.
+	var seed bytes.Buffer
+	if err := runVerify(&seed, verifyOpts{path: corpus, trust: true}); err != nil {
+		t.Fatalf("trust seed: %v", err)
+	}
+	lock := filepath.Join(home, "lock.yaml")
+	raw, err := os.ReadFile(lock)
+	if err != nil {
+		// No lock written at all is also a correct outcome (nothing to pin).
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatalf("read lock: %v", err)
+	}
+	if strings.Contains(string(raw), "examples/keyless-forged") {
+		t.Errorf("verify --trust must not pin a forged keyless bundle's scope into the lock:\n%s", raw)
 	}
 }
 
