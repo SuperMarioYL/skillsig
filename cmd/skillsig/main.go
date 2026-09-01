@@ -5,10 +5,20 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	skillsig "github.com/SuperMarioYL/skillsig"
 )
 
-// version is overwritten at release time via -ldflags "-X main.version=...".
-var version = "0.1.0-dev"
+// version reports the skillsig release version. It is initialized from the
+// VERSION file embedded by the module-root skillsig package, so EVERY build
+// path reports the same version: a plain
+// `go install github.com/SuperMarioYL/skillsig/cmd/skillsig@latest` (no
+// -ldflags) embeds the VERSION file at the tagged commit and reports the real
+// release version, not the stale "0.1.0-dev" sentinel it used to ship. The
+// goreleaser `-X main.version={{.Version}}` ldflags override
+// (.goreleaser.yaml) still wins at link time when present, so the
+// release-artifact path is unchanged.
+var version = skillsig.Version
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {

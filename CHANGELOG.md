@@ -9,6 +9,41 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.10.0] — 2026-09-02
+
+One version-correctness fix. The release no longer mis-reports its own
+version when installed via the documented `go install ...@latest` path.
+
+### Fixed
+- **`go install ...@latest` now reports the real release version, not
+  `0.1.0-dev` (high).** `cmd/skillsig/main.go` shipped
+  `var version = "0.1.0-dev"` (a dev sentinel frozen since the m1 scaffold)
+  and only the goreleaser `-X main.version={{.Version}}` ldflags overrode it
+  at release time. The README hero command and `web/site.json` both point
+  users at `go install github.com/SuperMarioYL/skillsig/cmd/skillsig@latest`,
+  which is plain `go install`/`go build` — it passes no `-ldflags`, so the
+  only in-source version surface shipped verbatim. Empirically confirmed at
+  the v0.9.0 tag: `go build ./cmd/skillsig && ./skillsig --version` printed
+  `skillsig version 0.1.0-dev`, not `0.9.0`. So every release from v0.1.0
+  through v0.9.0 mis-reports its own version to any user who installs via the
+  documented path (and the advertised Homebrew tap does not yet exist, so
+  `go install ...@latest` is the only install path). **Fix:** the VERSION file
+  is now the single source of truth via `//go:embed`. A new module-root
+  `skillsig` package embeds the VERSION file and exposes
+  `Version = strings.TrimSpace(rawVersion)`; `cmd/skillsig/main.go` now
+  initializes `var version = skillsig.Version`. A plain
+  `go install ...@latest` embeds the VERSION file at the tagged commit and
+  reports the real release version; the goreleaser ldflags override still wins
+  when present, so the release-artifact path is unchanged. No new
+  dependencies (only the stdlib `embed` package). New
+  `cmd/skillsig/version_test.go` builds the binary WITHOUT ldflags (exactly
+  the `go install ...@latest` path) and asserts `--version` equals
+  `skillsig version <VERSION-file>` (fails on v0.9.0 — `0.1.0-dev` ≠ `0.9.0`;
+  passes after), plus a lockstep test asserting `main.version`,
+  `skillsig.Version`, the root command's `Version`, and
+  `web/site.json` `content_version` all equal the canonical VERSION file so a
+  future bump cannot silently re-drift an in-source version surface.
+
 ## [0.9.0] — 2026-08-21
 
 Two verification-correctness fixes. One closes a supply-chain bypass where a
