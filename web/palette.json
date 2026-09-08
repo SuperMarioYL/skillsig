@@ -1,0 +1,38 @@
+{
+  "mode": "auto",
+  "id": "e6bb56-cae76a-f6c5ac-d78353e1da3b",
+  "identity": "https://github.com/supermarioyl/skillsig",
+  "primary": "#e6bb56",
+  "secondary": "#cae76a",
+  "highlight": "#f6c5ac",
+  "dark": {
+    "bg": "#0a0a0d",
+    "panel": "#131517",
+    "code": "#141413",
+    "ink": "#fdf3ee",
+    "muted": "#b2b1a8",
+    "line": "#3a311d",
+    "primary": "#e6bb56",
+    "secondary": "#cae76a",
+    "highlight": "#f6c5ac",
+    "accent": "#e6bb56",
+    "buttonStart": "#8e7335",
+    "buttonEnd": "#6e7d3a",
+    "buttonText": "#ffffff"
+  },
+  "light": {
+    "bg": "#fefdf9",
+    "panel": "#fefcf7",
+    "code": "#fdfaf3",
+    "ink": "#27241c",
+    "muted": "#72726b",
+    "line": "#f7ebcb",
+    "primary": "#8a7034",
+    "secondary": "#6b7a38",
+    "highlight": "#896e60",
+    "accent": "#8a7034",
+    "buttonStart": "#8e7335",
+    "buttonEnd": "#6e7d3a",
+    "buttonText": "#ffffff"
+  }
+}

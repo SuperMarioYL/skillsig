@@ -1,0 +1,82 @@
+{
+  "name": "skillsig",
+  "tagline": "Review skill permissions before an update becomes trusted.",
+  "architecture": {
+    "title": "How skillsig works",
+    "nodes": [
+      {
+        "title": "Skill manifest",
+        "detail": "internal/manifest"
+      },
+      {
+        "title": "Scope scanner",
+        "detail": "internal/scope"
+      },
+      {
+        "title": "Signature verifier",
+        "detail": "internal/verifier"
+      },
+      {
+        "title": "Table / JSON / SARIF",
+        "detail": "internal/report"
+      }
+    ],
+    "edges": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        3
+      ]
+    ]
+  },
+  "process": {
+    "title": "From input to a useful result",
+    "steps": [
+      {
+        "title": "Read declarations",
+        "detail": "Skill grants and manifest"
+      },
+      {
+        "title": "Check integrity",
+        "detail": "Scope and signature"
+      },
+      {
+        "title": "Report verdicts",
+        "detail": "Unsigned or drifted evidence"
+      }
+    ],
+    "result": "The recorded report exposes the fixture scope mismatch and missing signature state without executing skill content."
+  },
+  "integrations": {
+    "title": "Supported input and output routes",
+    "items": [
+      {
+        "title": "SKILL.md",
+        "detail": "Declared allowed-tools grants"
+      },
+      {
+        "title": "SKILLSIG.yaml",
+        "detail": "Intent and attestation metadata"
+      },
+      {
+        "title": "Ed25519 bundle",
+        "detail": "Local signature verification"
+      },
+      {
+        "title": "Lock baseline",
+        "detail": "Cross-version scope comparison"
+      },
+      {
+        "title": "SARIF",
+        "detail": "Code-scanning report artifact"
+      }
+    ]
+  }
+}

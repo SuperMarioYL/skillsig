@@ -1,126 +1,216 @@
 {
-  "schema": 1,
+  "schema": 3,
   "name": "skillsig",
   "github": "https://github.com/SuperMarioYL/skillsig",
   "host": "skillsig.lei6393.com",
+  "palette": "auto",
   "lang": {
-    "primary": "zh",
+    "primary": "en",
     "toggle": true
   },
-  "accent": [
-    "#e97300",
-    "#dc2626",
-    "#8b0000"
-  ],
+  "meta": {
+    "visual_style": "neon-particle",
+    "demo_source": "docs/demo-results.json"
+  },
   "hero": {
-    "eyebrow": {
-      "zh": "装前看清 · 更新防变宽 · 流水线兜底",
-      "en": "See before install · Catch the creep · Pipeline fails it"
-    },
     "headline": {
-      "zh": "你信的 Skill 悄悄加了危险权限\n流水线先替你拦下来",
-      "en": "A skill you trust quietly widens its reach\nyour pipeline catches it before you do"
+      "en": "Review skill permissions before an update becomes trusted.",
+      "zh": "在信任更新前检查 Skill 权限。"
     },
     "sub": {
-      "zh": "给团队里每一个 Claude Code Skill 配一道闸：装之前看清它能碰你的哪些文件、网络、命令；更新后一旦它想多拿一点权限，流水线直接挂掉，而不是事后才让你发现。",
-      "en": "Give every Claude Code skill in your team a gate: see which of your files, network, and shell it can touch before you install; and the moment a new version reaches for more than you signed off, the pipeline fails — not you, after the fact."
+      "en": "skillsig compares a skill’s declared scope with its frontmatter grants and a saved baseline, then checks its signature bundle.",
+      "zh": "skillsig 比较 Skill 声明范围、frontmatter 授权与已保存基线，再检查签名 bundle。"
     },
-    "command": "go install github.com/SuperMarioYL/skillsig/cmd/skillsig@latest",
-    "ctaGithub": {
-      "zh": "在 GitHub 查看",
-      "en": "View on GitHub"
-    },
-    "scroll": {
-      "zh": "向下滚动",
-      "en": "Scroll"
-    }
+    "href": "#quickstart"
   },
   "advantages": [
     {
       "title": {
-        "zh": "一份清单，写清它能碰什么",
-        "en": "One list: exactly what it can touch"
+        "en": "Compare declared grants",
+        "zh": "比较声明授权"
       },
       "body": {
-        "zh": "每个 Skill 配一份声明清单，白纸黑字写明它可以读写的文件、能不能联网、能跑哪些命令、面向哪个模型；装之前一屏看完，不用通读整份 prompt 才知道它到底会干什么。",
-        "en": "Each skill carries a declared list — plainly stating which files it can read and write, whether it goes online, which commands it can run, and which model it targets; you see it on one screen before installing, no need to read the whole prompt to know what it will actually do."
-      },
-      "chips": [
-        "› 文件 · 网络 · 命令 · 模型",
-        "› 装前一屏看完"
-      ]
+        "en": "Tool patterns are checked against manifest scope.",
+        "zh": "工具模式与 manifest 范围进行比较。"
+      }
     },
     {
       "title": {
-        "zh": "更新后偷偷加权限，当场抓到",
-        "en": "A sneaky permission bump, caught on update"
+        "en": "Detect baseline expansion",
+        "zh": "发现基线扩张"
       },
       "body": {
-        "zh": "上周你审过、信过的那个 Skill，今天一个新版本把删文件、读密钥、外联网络的权限悄悄塞了进来——不用你逐行比对，它会被直接标红，流水线当场挂掉。",
-        "en": "The skill you reviewed and trusted last week ships a new version that quietly slips in delete-files, read-your-keys, or phone-home permission — no line-by-line diffing needed, it is flagged red and the pipeline fails on the spot."
-      },
-      "chips": [
-        "› 新版本多拿的，全标红",
-        "› 不用自己逐行比对"
-      ]
+        "en": "A saved reviewed scope can expose later growth.",
+        "zh": "已保存检查范围可揭示后续扩张。"
+      }
     },
     {
       "title": {
-        "zh": "跑的这份，真是你审过的那份吗",
-        "en": "Is the one running the one you reviewed?"
+        "en": "Use CI outputs",
+        "zh": "接入 CI 输出"
       },
       "body": {
-        "zh": "签名替你回答一个问题：上周过目、点头放行的那个 Skill，和今天机器上拉下来的那个，是不是一字不差的同一份。不是，就别跑。",
-        "en": "A signature answers one question: is the skill you eyeballed and approved last week the exact one that just landed on your machine, byte for byte. If not, do not run it."
+        "en": "JSON, SARIF and exit codes support automation.",
+        "zh": "JSON、SARIF 与退出码可接入自动化。"
+      }
+    }
+  ],
+  "demo": {
+    "title": {
+      "en": "Run it on a complete example",
+      "zh": "运行完整示例"
+    },
+    "note": {
+      "en": "Verify the bundled skill fixture directory against an empty isolated baseline path.",
+      "zh": "使用空的独立基线路径验证随仓 Skill fixture 目录。"
+    },
+    "source": "https://github.com/SuperMarioYL/skillsig/blob/main/docs/demo-results.json",
+    "steps": [
+      {
+        "label": "Recorded run",
+        "body": "Read-only scope and signature verification of bundled synthetic skills using a separate absent baseline path; no skill is executed and no trust baseline is written.",
+        "command": "SKILLSIG_HOME=./examples/demo-empty-home go run ./cmd/skillsig verify ./testdata/skills/ --no-color",
+        "output": "SKILL                              VERDICT        DETAILS                                        \n---------------------------------  -------------  -----------------------------------------------\nskillsig-examples/jqwik-style-bad  SCOPE-DRIFTED  undeclared grant(s): Bash(rm -rf ~/.claude/*)  \nskillsig-examples/safe-skill       UNSIGNED       no valid signature bundle (unsigned)           \nscope-mismatch                     UNSIGNED       no skillsig manifest (sidecar or SKILLSIG.yaml)\n3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted",
+        "image": "/assets/presentation/demo-0-light.svg",
+        "imageDark": "/assets/presentation/demo-0-dark.svg"
+      }
+    ]
+  },
+  "quickstart": {
+    "title": {
+      "en": "Try it locally",
+      "zh": "本地上手"
+    },
+    "body": {
+      "en": "Verify the bundled skill fixture directory against an empty isolated baseline path.",
+      "zh": "使用空的独立基线路径验证随仓 Skill fixture 目录。"
+    },
+    "steps": [
+      {
+        "title": {
+          "en": "Install from source",
+          "zh": "从源码安装"
+        },
+        "code": "git clone https://github.com/SuperMarioYL/skillsig.git\ncd skillsig\ngo build ./cmd/skillsig"
       },
-      "chips": [
-        "› 签名说了算，不靠记忆",
-        "› 改一个字就露馅"
-      ]
+      {
+        "title": {
+          "en": "Run the included example",
+          "zh": "运行随仓示例"
+        },
+        "code": "SKILLSIG_HOME=./examples/demo-empty-home go run ./cmd/skillsig verify ./testdata/skills/ --no-color"
+      }
+    ]
+  },
+  "limitations": [
+    {
+      "en": "The Sigstore keyless backend is not wired in this build; --dev uses an ephemeral Ed25519 key.",
+      "zh": "当前构建未接通 Sigstore keyless 后端；--dev 使用临时 Ed25519 密钥。"
     },
     {
-      "title": {
-        "zh": "一个能挡住流水线的红绿灯",
-        "en": "A traffic light your pipeline can block on"
-      },
-      "body": {
-        "zh": "每个 Skill 最后落到一个明确判定：放行、没签名、还是越权变宽。只要有没签名或越权的，流水线直接挂掉——全程在你本机跑完，不联网、不依赖外部服务。",
-        "en": "Every skill ends in a clear verdict: trusted, unsigned, or scope-widened. One unsigned or widened skill and the pipeline fails outright — all on your own machine, no network, no external service."
-      },
-      "chips": [
-        "› 放行 / 没签名 / 越权",
-        "› 一个越权，流水线就挂"
-      ]
+      "en": "Manifest scope checks do not enforce runtime filesystem or network isolation. A signature is not proof of benign behavior.",
+      "zh": "Manifest 范围检查不执行运行时文件系统或网络隔离；签名也不证明行为安全。"
+    },
+    {
+      "en": "The demo only inspects bundled synthetic skills and writes no trust baseline.",
+      "zh": "示例只检查随仓合成 Skill，不写入信任基线。"
     }
   ],
   "scene": {
-    "kind": "hub-nodes",
-    "nodes": [
-      "model",
-      "tools",
-      "fs_write",
-      "network_egress"
+    "kind": "neon-graph",
+    "fallback": "/assets/presentation/scene-dark.svg",
+    "fallbackLight": "/assets/presentation/scene-light.svg"
+  },
+  "story": {
+    "intro": {
+      "title": {
+        "en": "A concrete task",
+        "zh": "从实际任务出发"
+      },
+      "body": {
+        "en": "A skill update can broaden allowed tools without changing the task you installed it for. A reviewed manifest and baseline make that expansion visible during verification.",
+        "zh": "Skill 更新可能扩大允许工具，而安装它的任务并未改变。经过检查的 manifest 与基线使权限扩张在验证时可见。"
+      }
+    },
+    "sections": [
+      {
+        "title": {
+          "en": "Follow the operation",
+          "zh": "处理过程"
+        },
+        "body": {
+          "en": "Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED or SCOPE-DRIFTED verdicts, which are rendered as a table, JSON or SARIF.",
+          "zh": "Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED 或 SCOPE-DRIFTED，再渲染为表格、JSON 或 SARIF。"
+        },
+        "image": {
+          "light": "/assets/presentation/process-light.svg",
+          "dark": "/assets/presentation/process-dark.svg",
+          "alt": {
+            "en": "Follow the operation",
+            "zh": "处理过程"
+          }
+        }
+      },
+      {
+        "title": {
+          "en": "How skillsig works",
+          "zh": "skillsig 的工作方式"
+        },
+        "body": {
+          "en": "Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED or SCOPE-DRIFTED verdicts, which are rendered as a table, JSON or SARIF.",
+          "zh": "Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED 或 SCOPE-DRIFTED，再渲染为表格、JSON 或 SARIF。"
+        },
+        "image": {
+          "light": "/assets/presentation/architecture-light.svg",
+          "dark": "/assets/presentation/architecture-dark.svg",
+          "alt": {
+            "en": "How skillsig works",
+            "zh": "skillsig 的工作方式"
+          }
+        }
+      },
+      {
+        "title": {
+          "en": "Connect the pieces",
+          "zh": "输入与输出"
+        },
+        "body": {
+          "en": "The following routes are implemented in the source. Choose the input that matches your task and keep the resulting artifact with your project.",
+          "zh": "以下路径已有源码实现。按任务选择输入，并把生成的结果与项目一起保存。"
+        },
+        "image": {
+          "light": "/assets/presentation/integrations-light.svg",
+          "dark": "/assets/presentation/integrations-dark.svg",
+          "alt": {
+            "en": "Connect the pieces",
+            "zh": "输入与输出"
+          }
+        }
+      }
+    ],
+    "details": [
+      {
+        "title": {
+          "en": "Configuration",
+          "zh": "配置"
+        },
+        "body": {
+          "en": "SKILLSIG_HOME relocates the local lock storage. Plain verify is read-only; --trust records only currently trusted scopes. --force-trust with --trust explicitly rebaselines drifted entries and should follow a scope review. --json and --sarif select structured reports.",
+          "zh": "SKILLSIG_HOME 可更改本地锁存储位置。普通 verify 只读；--trust 只记录当前受信任范围。--force-trust 配合 --trust 显式重置漂移基线，应先检查权限变化。--json 与 --sarif 输出结构化报告。"
+        }
+      },
+      {
+        "title": {
+          "en": "Further use",
+          "zh": "进一步使用"
+        },
+        "body": {
+          "en": "The CLI exposes the following operations. Commands after the example use your own paths or identifiers.",
+          "zh": "CLI 提供以下操作。示例之外的命令需要替换成你的文件路径或标识。"
+        },
+        "code": "go run ./cmd/skillsig verify ./testdata/skills/ --no-color\ngo run ./cmd/skillsig verify ./testdata/skills/ --json\n# CI rejects unsigned or drifted rows:\nskillsig verify ./skills --ci --sarif results.sarif"
+      }
     ]
-  },
-  "cta": {
-    "headline": {
-      "zh": "给团队装的 Skill，配一道闸",
-      "en": "Put a gate on your team's skills"
-    },
-    "sub": {
-      "zh": "MIT 许可，一条命令装好：看清每个 Skill 能碰什么，更新后自动拦住偷偷变宽的权限。",
-      "en": "MIT-licensed, one command to install: see what each skill can touch, and auto-block any sneaky scope creep on update."
-    },
-    "button": {
-      "zh": "在 GitHub 查看",
-      "en": "View on GitHub"
-    }
-  },
-  "footer": {
-    "tag": {
-      "zh": "开源 · MIT",
-      "en": "Open source · MIT"
-    }
   },
   "content_version": "v0.10.0"
 }
