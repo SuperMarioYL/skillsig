@@ -9,6 +9,46 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.11.0] — 2026-09-16
+
+Two verified bug-fixes and one trust-display quality fix, all hunted from the
+shipped v0.10.0 source.
+
+### Fixed
+- **A semantically no-op manifest edit no longer reads as a forged
+  attestation (high).** The canonical payload that `sign` hashed and `verify`
+  re-derived marshaled the `tools` / `fs_write` / `network_egress` lists
+  verbatim, so list ORDER, entry whitespace, and duplicate entries were
+  byte-significant to the signature — while the scope layer (and the schema's
+  own documented contract, "Order of entries is not significant") ignores all
+  three. Reproduced at v0.10.0: sign a skill, reorder its tools list, and
+  `verify` flipped the row to SCOPE-DRIFTED "tampered or forged attestation"
+  (failing `--ci`) for a change that widened nothing. The canonicalization now
+  normalizes each list (trim, drop empties, sort, dedupe) in one owner —
+  `verifier.CanonicalPayload`, which `sign` delegates to — so the signature
+  commits to the SET of grants. `declares.model` stays byte-exact (the scope
+  layer compares it exactly). **Migration note:** bundles signed by ≤ v0.10.0
+  binaries whose lists were not already normalized must be re-signed once
+  (`skillsig sign`); dev-backend bundles are ephemeral-key and re-signed on
+  every manifest edit anyway.
+- **`skillsig init --force` (sibling mode) now splices the stale inline
+  manifest out of SKILL.md (high).** ParseSkill checks an inline fenced
+  `skillsig:` block FIRST and only falls back to SKILLSIG.yaml when none
+  exists, so regenerating the manifest as SKILLSIG.yaml while a stale inline
+  block remained left the STALE manifest authoritative — the freshly written
+  SKILLSIG.yaml was dead text while `init` reported success. In the narrowing
+  direction that was fail-unsafe: a stale BROAD inline block read TRUSTED and
+  got signed (an over-broad attestation the author believed they had
+  narrowed). This is the sibling-direction mirror of the v0.8.0 stale-block
+  fix.
+
+### Changed
+- **verify now surfaces the signer identity** (the m2-promised identity
+  report): a TRUSTED row's details carry `(signed by <subject>)` and each
+  `--json` row carries `signed_by` (empty for unsigned skills), so a human can
+  see who vouched and CI can assert on the publisher without scraping the
+  table.
+
 ## [0.10.0] — 2026-09-02
 
 One version-correctness fix. The release no longer mis-reports its own

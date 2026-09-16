@@ -17,6 +17,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -110,6 +112,20 @@ func VerifySkill(s *manifest.Skill) Result {
 // function is exported so tests (and a future `skillsig verify --explain`
 // flag) can produce the digest themselves and compare. Keeping the rule in
 // one place — here — is what makes sign and verify round-trip safely.
+//
+// The three list fields (tools, fs_write, network_egress) are NORMALIZED
+// before marshaling (v0.11.0, fix-canonical-payload-not-canonical): each entry
+// is whitespace-trimmed, empties dropped, and the list sorted and deduplicated.
+// The payload therefore commits to the SET of grants, not the byte layout of
+// the manifest — matching the schema's own documented contract
+// (internal/manifest/schema.go: "Order of entries is not significant") and the
+// scope layer's semantics (every comparison TrimSpaces entries and matches via
+// an any-coverage loop, so order, padding, and duplicates never change a
+// verdict). Before the fix the lists were marshaled verbatim, so a pure list
+// reorder or a whitespace-only edit produced a different digest and verify
+// reported a validly-signed skill as "tampered or forged attestation" — a
+// false reject on a non-escalating change. declares.model stays byte-exact:
+// the scope layer compares it exactly, so it is significant.
 func CanonicalPayload(m *manifest.Manifest) ([]byte, error) {
 	canonical := manifest.Manifest{
 		Skillsig: m.Skillsig,
@@ -117,12 +133,34 @@ func CanonicalPayload(m *manifest.Manifest) ([]byte, error) {
 		Version:  m.Version,
 		Declares: manifest.Declares{
 			Model:         m.Declares.Model,
-			Tools:         append([]string(nil), m.Declares.Tools...),
-			FSWrite:       append([]string(nil), m.Declares.FSWrite...),
-			NetworkEgress: append([]string(nil), m.Declares.NetworkEgress...),
+			Tools:         canonicalList(m.Declares.Tools),
+			FSWrite:       canonicalList(m.Declares.FSWrite),
+			NetworkEgress: canonicalList(m.Declares.NetworkEgress),
 		},
 	}
 	return yaml.Marshal(canonical)
+}
+
+// canonicalList normalizes one declared-scope list into its canonical form:
+// entries are whitespace-trimmed, empty entries dropped, duplicates removed,
+// and the result sorted. Always returns a non-nil slice so an all-empty list
+// marshals as `[]` deterministically.
+func canonicalList(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // resolveBundlePath honors manifest.Attestation.SigstoreBundle when present

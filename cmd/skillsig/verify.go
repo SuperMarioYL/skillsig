@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -115,8 +116,7 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 		// the drift baseline. NO-BUNDLE and BAD-SIGNATURE are shown UNSIGNED /
 		// SCOPE-DRIFTED and are likewise never pinned.
 		scanner.TrustRecordGate = func(dir string) bool {
-			v := sigByDir[dir]
-			return v == verifier.VerdictSigned
+			return sigByDir[dir].Verdict == verifier.VerdictSigned
 		}
 	}
 	var results []scope.Result
@@ -191,26 +191,28 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 }
 
 // signatureVerdicts walks every skill dir under root (same sorted order the
-// scanner uses) and maps each to its bundle-signature verdict from
-// verifier.VerifySkill. It is computed once per verify invocation and shared by
-// both the DISPLAY path (applySignatureVerdicts) and the --trust record gate, so
-// the two never disagree on which skills carry a valid attestation. A malformed
-// skill is skipped (no verifiable signature); its dir is simply absent from the
-// map. A walk error yields a nil map, and callers treat a missing dir as "no
-// positive signature" (fail-closed for the gate, no-op for the display path).
-func signatureVerdicts(root string) map[string]verifier.Verdict {
+// scanner uses) and maps each to its full bundle-signature verification result
+// from verifier.VerifySkill — verdict AND signer identity. It is computed once
+// per verify invocation and shared by both the DISPLAY path
+// (applySignatureVerdicts) and the --trust record gate, so the two never
+// disagree on which skills carry a valid attestation (or WHO attested them).
+// A malformed skill is skipped (no verifiable signature); its dir is simply
+// absent from the map. A walk error yields a nil map, and callers treat a
+// missing dir as "no positive signature" (fail-closed for the gate, no-op for
+// the display path).
+func signatureVerdicts(root string) map[string]verifier.Result {
 	dirs, err := manifest.FindSkillDirs(root)
 	if err != nil {
 		return nil
 	}
 	sort.Strings(dirs)
-	sigByDir := make(map[string]verifier.Verdict, len(dirs))
+	sigByDir := make(map[string]verifier.Result, len(dirs))
 	for _, d := range dirs {
 		sk, err := manifest.ParseSkill(d)
 		if err != nil {
 			continue
 		}
-		sigByDir[sk.Dir] = verifier.VerifySkill(sk).Verdict
+		sigByDir[sk.Dir] = verifier.VerifySkill(sk)
 	}
 	return sigByDir
 }
@@ -232,21 +234,31 @@ func signatureVerdicts(root string) map[string]verifier.Verdict {
 //     pinned by --trust. (The verifier still surfaces VerdictKeylessPending so a
 //     future keyless-enabled build can verify it instead; only the CLI display /
 //     trust / --ci decisions change here.)
-//   - SIGNED          → no change; the scope verdict already stands on its own.
+//   - SIGNED          → the row stays TRUSTED and the signer identity is
+//     surfaced (v0.11.0, quality-surface-signer-identity-in-verify): Details
+//     gains "(signed by <subject>)" and Result.SignedBy carries the subject for
+//     the JSON report. This is the m2-promised identity report — a TRUSTED
+//     verdict without WHO vouched is unverifiable by a human and unparsable by
+//     CI publisher policy. An empty/absent subject renders as "unknown
+//     identity" rather than being silently dropped.
 //
 // A row that scope already marked UNSIGNED / SCOPE-DRIFTED is left untouched —
 // it is already failing for a stronger reason. A dir absent from sigByDir (a
 // malformed skill) keeps its scope verdict unchanged.
 //
-// sigByDir is the per-dir signature verdict map (see signatureVerdicts). It is
-// computed once by the caller so the DISPLAY path here and the --trust gate agree
-// on exactly which skills have a valid attestation.
-func applySignatureVerdicts(sigByDir map[string]verifier.Verdict, results []scope.Result) []scope.Result {
+// sigByDir is the per-dir signature result map (see signatureVerdicts). It is
+// computed once by the caller so the DISPLAY path here and the --trust gate
+// agree on exactly which skills have a valid attestation.
+func applySignatureVerdicts(sigByDir map[string]verifier.Result, results []scope.Result) []scope.Result {
 	for i, r := range results {
 		if r.Verdict != scope.VerdictTrusted {
 			continue // only a scope-TRUSTED row can be downgraded by a bad signature
 		}
-		switch sigByDir[r.Dir] {
+		sig, ok := sigByDir[r.Dir]
+		if !ok {
+			continue // no signature info for this dir; keep the scope verdict untouched
+		}
+		switch sig.Verdict {
 		case verifier.VerdictNoBundle:
 			results[i].Verdict = scope.VerdictUnsigned
 			results[i].Details = "no valid signature bundle (unsigned)"
@@ -256,8 +268,15 @@ func applySignatureVerdicts(sigByDir map[string]verifier.Verdict, results []scop
 		case verifier.VerdictKeylessPending:
 			results[i].Verdict = scope.VerdictUnsigned
 			results[i].Details = "keyless bundle not verified in this build"
+		case verifier.VerdictSigned:
+			subject := strings.TrimSpace(sig.Identity.Subject)
+			if subject == "" {
+				subject = "unknown identity"
+			}
+			results[i].Details += " (signed by " + subject + ")"
+			results[i].SignedBy = subject
 		default:
-			// VerdictSigned (or an unknown dir with no manifest) → keep TRUSTED.
+			// An unknown verdict value → keep the scope verdict as-is.
 		}
 	}
 	return results

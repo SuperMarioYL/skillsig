@@ -25,11 +25,17 @@ const (
 // Result is what the report renders. Details is a short, human-readable
 // summary of WHY the verdict landed where it did (e.g. which tool grant was
 // not in the declared allowlist).
+//
+// SignedBy is the signer identity subject for rows whose attestation verified
+// (empty otherwise). The scope package itself never populates it — the CLI
+// layer sets it after signature verification — but it lives on the row so the
+// table and the JSON report stay symmetric about what they render.
 type Result struct {
-	SkillID string
-	Dir     string
-	Verdict Verdict
-	Details string
+	SkillID  string
+	Dir      string
+	Verdict  Verdict
+	Details  string
+	SignedBy string
 }
 
 // Evaluate returns the verdict for one parsed skill against m1 rules:

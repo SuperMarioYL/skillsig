@@ -84,11 +84,15 @@ func Render(w io.Writer, results []scope.Result, color bool) error {
 // jsonSkill is the per-skill shape emitted by RenderJSON. Field names are
 // snake_case and stable so CI consumers can pin them; verdicts are the same
 // uppercase strings the table prints (TRUSTED / UNSIGNED / SCOPE-DRIFTED).
+// signed_by carries the signer identity subject for rows whose attestation
+// verified (empty string otherwise) so CI can assert on the publisher without
+// scraping the human table.
 type jsonSkill struct {
-	SkillID string `json:"skill_id"`
-	Dir     string `json:"dir"`
-	Verdict string `json:"verdict"`
-	Details string `json:"details"`
+	SkillID  string `json:"skill_id"`
+	Dir      string `json:"dir"`
+	Verdict  string `json:"verdict"`
+	Details  string `json:"details"`
+	SignedBy string `json:"signed_by"`
 }
 
 // jsonReport is the top-level object RenderJSON writes: the per-skill rows plus
@@ -115,10 +119,11 @@ func RenderJSON(w io.Writer, results []scope.Result) error {
 	rep := jsonReport{Skills: make([]jsonSkill, 0, len(results))}
 	for _, r := range results {
 		rep.Skills = append(rep.Skills, jsonSkill{
-			SkillID: r.SkillID,
-			Dir:     r.Dir,
-			Verdict: string(r.Verdict),
-			Details: r.Details,
+			SkillID:  r.SkillID,
+			Dir:      r.Dir,
+			Verdict:  string(r.Verdict),
+			Details:  r.Details,
+			SignedBy: r.SignedBy,
 		})
 		rep.Summary.Total++
 		switch r.Verdict {

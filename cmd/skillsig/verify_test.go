@@ -397,6 +397,13 @@ func writeSkillNoBundle(t *testing.T, root, name, skillID string, tools []string
 // is signed over the SAME canonical payload verify will re-derive.
 func signSkillBundle(t *testing.T, dir string) {
 	t.Helper()
+	signSkillBundleAs(t, dir, "test-ephemeral")
+}
+
+// signSkillBundleAs is signSkillBundle with an explicit identity subject, so
+// tests can assert the identity surfacing (v0.11.0) against a known value.
+func signSkillBundleAs(t *testing.T, dir, subject string) {
+	t.Helper()
 	sk, err := manifest.ParseSkill(dir)
 	if err != nil {
 		t.Fatalf("parse for signing %s: %v", dir, err)
@@ -405,7 +412,7 @@ func signSkillBundle(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatalf("canonical payload: %v", err)
 	}
-	s, err := signer.NewDev("test-ephemeral")
+	s, err := signer.NewDev(subject)
 	if err != nil {
 		t.Fatalf("new dev signer: %v", err)
 	}
@@ -796,4 +803,86 @@ func containsString(xs []string, s string) bool {
 
 func shortName(dir string) string {
 	return filepath.Base(dir)
+}
+
+// TestRunVerify_SignatureSurvivesListReorder is the v0.11.0 fix
+// (fix-canonical-payload-not-canonical), end-to-end through the CLI: the
+// bundle signs the canonical SET of grants, so reordering the declared lists
+// (plus whitespace padding and a duplicate entry — every edit the scope layer
+// ignores and the schema documents as insignificant) must leave the skill
+// TRUSTED and passing --ci. Before the fix this exact edit produced a new
+// digest the bundle no longer matched, flipping the row to SCOPE-DRIFTED
+// "tampered or forged attestation" and failing verify --ci.
+func TestRunVerify_SignatureSurvivesListReorder(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	writeSkill(t, corpus, "demo", "examples/demo", []string{"Read", "Bash(git status*)"})
+
+	// Rewrite the sidecar with the SAME grant set in a different order, one
+	// entry whitespace-padded, and one duplicate — nothing the scope verdict
+	// can see.
+	sidecar := "skillsig: v1\nskill_id: examples/demo\nversion: v1\ndeclares:\n  tools:\n    - Bash(git status*)\n    - Read\n    - \" Read \"\n"
+	if err := os.WriteFile(filepath.Join(corpus, "demo", "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("rewrite sidecar: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus, ci: true}); err != nil {
+		t.Errorf("reordered-but-identical grant set must stay TRUSTED and pass --ci; got %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "TRUSTED") {
+		t.Errorf("expected TRUSTED after a no-op list edit; got:\n%s", buf.String())
+	}
+}
+
+// TestRunVerify_SurfacesSignerIdentity is the v0.11.0 quality milestone
+// (quality-surface-signer-identity-in-verify): the base plan's m2 promises
+// "verify resolves Fulcio identity and reports signer email", and the verifier
+// computes it, but no verify output ever showed it — a TRUSTED verdict without
+// WHO vouched is unverifiable by a human and unparsable by CI publisher policy.
+// Now a signed row's Details carries "(signed by <subject>)" and the --json row
+// carries signed_by; an unsigned row keeps its v0.10.0 Details and reports
+// signed_by == "".
+func TestRunVerify_SurfacesSignerIdentity(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	dir := writeSkillNoBundle(t, corpus, "signed", "examples/signed", []string{"Read"})
+	signSkillBundleAs(t, dir, "author@x.test")
+	writeSkillNoBundle(t, corpus, "plain", "examples/plain", []string{"Read"})
+
+	// (a) The human table names the signer on the TRUSTED row.
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "(signed by author@x.test)") {
+		t.Errorf("table details should name the signer; got:\n%s", out)
+	}
+
+	// (b) The JSON report carries signed_by (machine-readable publisher check).
+	var jb bytes.Buffer
+	if err := runVerify(&jb, verifyOpts{path: corpus, asJSON: true}); err != nil {
+		t.Fatalf("verify --json: %v", err)
+	}
+	var got struct {
+		Skills []struct {
+			SkillID  string `json:"skill_id"`
+			Verdict  string `json:"verdict"`
+			SignedBy string `json:"signed_by"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(jb.Bytes(), &got); err != nil {
+		t.Fatalf("json output invalid: %v\n%s", err, jb.String())
+	}
+	bySkill := map[string]string{}
+	for _, s := range got.Skills {
+		bySkill[s.SkillID] = s.SignedBy
+	}
+	if got := bySkill["examples/signed"]; got != "author@x.test" {
+		t.Errorf("signed skill signed_by = %q, want %q", got, "author@x.test")
+	}
+	if got := bySkill["examples/plain"]; got != "" {
+		t.Errorf("unsigned skill signed_by = %q, want empty", got)
+	}
 }

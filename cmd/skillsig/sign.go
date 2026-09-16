@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/SuperMarioYL/skillsig/internal/manifest"
 	"github.com/SuperMarioYL/skillsig/internal/signer"
+	"github.com/SuperMarioYL/skillsig/internal/verifier"
 )
 
 // bundleFileName is the default sidecar name; matches the path the manifest
@@ -147,22 +147,15 @@ func runSign(ctx context.Context, out io.Writer, path string, opts signOptions) 
 // because it points back at the bundle itself; including it would create a
 // chicken-and-egg cycle (the bundle would commit to its own filename).
 //
-// The yaml encoder is configured with a 2-space indent and produces stable,
-// alphabetically-keyed output via the struct tag order, so the same manifest
-// produces the same bytes across machines and Go versions.
+// It delegates to verifier.CanonicalPayload — the SINGLE owner of the
+// canonicalization rule (v0.11.0: the list fields are normalized — trimmed,
+// sorted, deduplicated — so the signature commits to the SET of grants,
+// matching the scope layer's "order is not significant" semantics; before
+// this, sign carried a byte-identical copy that could silently drift from the
+// verifier's re-derivation and fail every round-trip). Sign and verify calling
+// the one function is what keeps them in agreement by construction.
 func canonicalPayload(m *manifest.Manifest) ([]byte, error) {
-	canonical := manifest.Manifest{
-		Skillsig: m.Skillsig,
-		SkillID:  m.SkillID,
-		Version:  m.Version,
-		Declares: manifest.Declares{
-			Model:         m.Declares.Model,
-			Tools:         append([]string(nil), m.Declares.Tools...),
-			FSWrite:       append([]string(nil), m.Declares.FSWrite...),
-			NetworkEgress: append([]string(nil), m.Declares.NetworkEgress...),
-		},
-	}
-	return yaml.Marshal(canonical)
+	return verifier.CanonicalPayload(m)
 }
 
 // writeBundle marshals the bundle as indented JSON (so diffs in a Skill repo

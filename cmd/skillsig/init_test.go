@@ -177,3 +177,120 @@ func TestRunInit_InlineForceAppendsWhenNoBlock(t *testing.T) {
 		t.Errorf("manifest source: got %q want sidecar", sk.ManifestSrc)
 	}
 }
+
+// staleInlineSkillMD builds a SKILL.md whose allowed-tools is allowedTools but
+// whose EMBEDDED inline manifest declares staleTools — the shape after a skill
+// broadened (or narrowed) its grants while the inline manifest went stale. It
+// mirrors the shape appendInline produces.
+func staleInlineSkillMD(allowedTools, staleTools []string) string {
+	var b strings.Builder
+	b.WriteString("---\nname: demo\ndescription: init fixture\nallowed-tools:\n")
+	for _, t := range allowedTools {
+		b.WriteString("  - " + t + "\n")
+	}
+	b.WriteString("---\n\n# demo\n\n## skillsig manifest\n\n```yaml\n")
+	b.WriteString("skillsig: v1\nskill_id: local/demo\nversion: 0.1.0\ndeclares:\n  model: claude-opus-4-7\n  tools:\n")
+	for _, t := range staleTools {
+		b.WriteString("    - " + t + "\n")
+	}
+	b.WriteString("  fs_write:\n    - \"${WORKSPACE}/**\"\n  network_egress: []\nattestation:\n  sigstore_bundle: ./skillsig.bundle\n```\n")
+	return b.String()
+}
+
+// TestRunInit_ForceSiblingRemovesStaleInlineBlock is the v0.11.0 fix
+// (fix-init-force-sibling-leaves-stale-inline-block) — the sibling-direction
+// mirror of the v0.8.0 stale-block fix. Running `skillsig init --force`
+// (sibling mode, the default) on a SKILL.md that still embeds a fenced
+// skillsig block must splice that block OUT of SKILL.md, because ParseSkill
+// checks the inline block FIRST (extractSidecar) and only falls back to
+// SKILLSIG.yaml when no inline block exists. Before the fix the stale block
+// stayed authoritative while runInit reported success: the regenerated
+// SKILLSIG.yaml was dead text, a stale NARROW block kept reporting phantom
+// drift, and a stale BROAD block read TRUSTED and got signed — an over-broad
+// attestation the author believed they had narrowed.
+func TestRunInit_ForceSiblingRemovesStaleInlineBlock(t *testing.T) {
+	dir := t.TempDir()
+	// allowed-tools includes Bash(echo*) but the stale inline manifest does not
+	// declare it — verify reports "undeclared grant(s): Bash(echo*)" until the
+	// manifest is regenerated.
+	md := staleInlineSkillMD([]string{"Read", "Bash(echo*)"}, []string{"Read"})
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runInit(&buf, dir, initOptions{
+		force:   true,
+		skillID: "local/demo",
+		version: "0.1.0",
+		model:   "claude-opus-4-7",
+	}); err != nil {
+		t.Fatalf("runInit --force (sibling mode): %v", err)
+	}
+
+	// (a) The stale fenced block must be GONE from SKILL.md.
+	after, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read SKILL.md after init: %v", err)
+	}
+	if strings.Contains(string(after), "```yaml") || strings.Contains(string(after), "skillsig: v1") {
+		t.Errorf("stale inline block survived init --force (sibling mode):\n%s", after)
+	}
+
+	// (b) ParseSkill must now read the REGENERATED sibling manifest, which
+	// declares the full allowed-tools — under the bug the stale inline block
+	// still won and Bash(echo*) stayed undeclared.
+	sk, err := manifest.ParseSkill(dir)
+	if err != nil {
+		t.Fatalf("parse after init: %v", err)
+	}
+	if sk.Manifest == nil {
+		t.Fatalf("expected a manifest after init, got nil")
+	}
+	if sk.ManifestSrc != "SKILLSIG.yaml" {
+		t.Errorf("manifest source: got %q want %q (the regenerated sibling)", sk.ManifestSrc, "SKILLSIG.yaml")
+	}
+	for _, want := range []string{"Read", "Bash(echo*)"} {
+		found := false
+		for _, tl := range sk.Manifest.Declares.Tools {
+			if tl == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("regenerated declares.tools missing %q; got %v (the stale inline block still wins)", want, sk.Manifest.Declares.Tools)
+		}
+	}
+}
+
+// TestRunInit_ForceSiblingLeavesSKILLMDWithoutFenceUntouched guards the
+// inverse: when SKILL.md has no inline skillsig fence (source is SKILLSIG.yaml
+// or none at all), `init --force` must not rewrite SKILL.md at all.
+func TestRunInit_ForceSiblingLeavesSKILLMDWithoutFenceUntouched(t *testing.T) {
+	dir := t.TempDir()
+	md := "---\nname: demo\nallowed-tools:\n  - Read\n---\n# demo\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runInit(&buf, dir, initOptions{
+		force:   true,
+		skillID: "local/demo",
+		version: "0.1.0",
+		model:   "claude-opus-4-7",
+	}); err != nil {
+		t.Fatalf("runInit --force: %v", err)
+	}
+
+	after, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read SKILL.md after init: %v", err)
+	}
+	if string(after) != md {
+		t.Errorf("init --force rewrote a SKILL.md that had no inline block:\nbefore:\n%s\nafter:\n%s", md, after)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "SKILLSIG.yaml")); err != nil {
+		t.Errorf("expected SKILLSIG.yaml to be written: %v", err)
+	}
+}

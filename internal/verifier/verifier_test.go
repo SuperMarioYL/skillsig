@@ -174,3 +174,83 @@ func TestVerifySkill_NilAndEmpty(t *testing.T) {
 		t.Errorf("no-manifest skill: got %q want %q", got.Verdict, VerdictNoBundle)
 	}
 }
+
+// TestCanonicalPayload_ListFieldsNormalized is the v0.11.0 fix
+// (fix-canonical-payload-not-canonical): the canonical payload must commit to
+// the SET of declared grants, not the manifest's byte layout. Before the fix
+// the three list fields were marshaled verbatim, so a pure list reorder, a
+// whitespace-only entry edit, or a duplicate entry produced a DIFFERENT digest
+// while the scope layer (covered/matchGlob/addedTools — all TrimSpace entries,
+// matched via an any-coverage loop) and the schema's own documented contract
+// ("Order of entries is not significant") treat those edits as no-ops. verify
+// then reported a validly-signed skill as "tampered or forged attestation" —
+// a false reject on a non-escalating change. The payload must be byte-equal
+// across all such variants, and must still change when declares.model changes
+// (the one field the scope layer compares byte-exactly).
+func TestCanonicalPayload_ListFieldsNormalized(t *testing.T) {
+	base := &manifest.Manifest{
+		Skillsig: "v1",
+		SkillID:  "examples/demo",
+		Version:  "0.1.0",
+		Declares: manifest.Declares{
+			Model:         "claude-opus-4-7",
+			Tools:         []string{"Read", "Bash(git status*)", "Edit"},
+			FSWrite:       []string{"${WORKSPACE}/**", "${WORKSPACE}/tmp"},
+			NetworkEgress: []string{"registry.npmjs.org", "api.github.com"},
+		},
+	}
+	basePayload, err := CanonicalPayload(base)
+	if err != nil {
+		t.Fatalf("canonical payload: %v", err)
+	}
+
+	variants := map[string]manifest.Declares{
+		"reordered": {
+			Model:         "claude-opus-4-7",
+			Tools:         []string{"Edit", "Bash(git status*)", "Read"},
+			FSWrite:       []string{"${WORKSPACE}/tmp", "${WORKSPACE}/**"},
+			NetworkEgress: []string{"api.github.com", "registry.npmjs.org"},
+		},
+		"whitespace-padded": {
+			Model:         "claude-opus-4-7",
+			Tools:         []string{" Read ", "Bash(git status*)", "Edit"},
+			FSWrite:       []string{"  ${WORKSPACE}/**", "${WORKSPACE}/tmp "},
+			NetworkEgress: []string{" registry.npmjs.org", "api.github.com"},
+		},
+		"duplicates": {
+			Model:         "claude-opus-4-7",
+			Tools:         []string{"Read", "Read", "Edit", "Edit", "Bash(git status*)"},
+			FSWrite:       []string{"${WORKSPACE}/**", "${WORKSPACE}/tmp", "${WORKSPACE}/tmp"},
+			NetworkEgress: []string{"api.github.com", "api.github.com", "registry.npmjs.org"},
+		},
+		"empty-and-blank-entries": {
+			Model:         "claude-opus-4-7",
+			Tools:         []string{"", "Read", "  ", "Edit", "Bash(git status*)"},
+			FSWrite:       []string{"${WORKSPACE}/**", "", "${WORKSPACE}/tmp"},
+			NetworkEgress: []string{"", "api.github.com", "registry.npmjs.org"},
+		},
+	}
+	for name, d := range variants {
+		m := *base
+		m.Declares = d
+		p, err := CanonicalPayload(&m)
+		if err != nil {
+			t.Fatalf("%s: canonical payload: %v", name, err)
+		}
+		if string(p) != string(basePayload) {
+			t.Errorf("%s: canonical payload changed for a semantically identical grant set:\nbase:\n%s\nvariant:\n%s", name, basePayload, p)
+		}
+	}
+
+	// Model stays byte-exact: the scope layer compares it exactly, so a model
+	// swap MUST change the payload (it needs re-attestation).
+	m := *base
+	m.Declares.Model = "claude-sonnet-4-6"
+	p, err := CanonicalPayload(&m)
+	if err != nil {
+		t.Fatalf("canonical payload (model swap): %v", err)
+	}
+	if string(p) == string(basePayload) {
+		t.Errorf("a declares.model change must change the canonical payload")
+	}
+}

@@ -106,6 +106,21 @@ func runInit(out io.Writer, path string, opts initOptions) error {
 		}
 		fmt.Fprintf(out, "wrote skillsig manifest into %s (fenced sidecar)\n", dest)
 	} else {
+		// Switching to the sibling manifest with --force must ALSO splice the
+		// stale inline fenced block out of SKILL.md (v0.11.0,
+		// fix-init-force-sibling-leaves-stale-inline-block — the sibling-direction
+		// mirror of the v0.8.0 stale-block fix). ParseSkill checks the inline
+		// fenced block FIRST (extractSidecar) and only falls back to
+		// SKILLSIG.yaml when no inline block exists, so leaving the old block in
+		// place would keep the STALE manifest authoritative and reduce the
+		// freshly written SKILLSIG.yaml to dead text — while runInit reports
+		// success. In the narrowing direction that is fail-unsafe: the stale
+		// broad scope stays TRUSTED and `sign` signs it.
+		if opts.force && skill.ManifestSrc == "sidecar" {
+			if err := removeSkillsigFence(filepath.Join(path, "SKILL.md")); err != nil {
+				return fmt.Errorf("init: remove stale inline block: %w", err)
+			}
+		}
 		dest := filepath.Join(path, sidecarFileName)
 		if err := writeSidecar(dest, data, opts.force); err != nil {
 			return fmt.Errorf("init: %w", err)
@@ -248,6 +263,30 @@ func buildInlineBlock(manifestYAML []byte) string {
 	}
 	b.WriteString("```\n")
 	return b.String()
+}
+
+// removeSkillsigFence splices the first fenced "skillsig:" block (opening
+// fence through closing fence, including the closing fence's trailing newline)
+// out of the SKILL.md at path. It is the sibling-mode counterpart of
+// appendInline's in-place replace: when `init --force` regenerates the
+// manifest as SKILLSIG.yaml, the stale inline block must be removed or
+// ParseSkill keeps reading it (extractSidecar checks the inline block first)
+// and the regenerated sibling manifest is dead text. A file with no skillsig
+// fence is left untouched. Any prose around the block (e.g. the "## skillsig
+// manifest" header appendInline adds) is left as-is — only the fence itself
+// is load-bearing for parsing.
+func removeSkillsigFence(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	body := string(raw)
+	start, end, ok := findSkillsigFence(body)
+	if !ok {
+		return nil
+	}
+	out := body[:start] + body[end:]
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 // findSkillsigFence returns the byte offsets [start, end) of the first fenced
