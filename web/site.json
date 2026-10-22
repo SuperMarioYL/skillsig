@@ -139,8 +139,8 @@
           "zh": "处理过程"
         },
         "body": {
-          "en": "Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED or SCOPE-DRIFTED verdicts, which are rendered as a table, JSON or SARIF.",
-          "zh": "Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED 或 SCOPE-DRIFTED，再渲染为表格、JSON 或 SARIF。"
+          "en": "Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED, SCOPE-DRIFTED or MALFORMED verdicts, which are rendered as a table, JSON or SARIF.",
+          "zh": "Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED、SCOPE-DRIFTED 或 MALFORMED，再渲染为表格、JSON 或 SARIF。"
         },
         "image": {
           "light": "/assets/presentation/process-light.svg",
@@ -161,8 +161,8 @@
           "zh": "skillsig 的工作方式"
         },
         "body": {
-          "en": "Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED or SCOPE-DRIFTED verdicts, which are rendered as a table, JSON or SARIF.",
-          "zh": "Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED 或 SCOPE-DRIFTED，再渲染为表格、JSON 或 SARIF。"
+          "en": "Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED, SCOPE-DRIFTED or MALFORMED verdicts, which are rendered as a table, JSON or SARIF.",
+          "zh": "Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED、SCOPE-DRIFTED 或 MALFORMED，再渲染为表格、JSON 或 SARIF。"
         },
         "image": {
           "light": "/assets/presentation/architecture-light.svg",
