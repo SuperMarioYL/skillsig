@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source_revision": "c436013a7eca9efee8940e4f3140d9f2a51d5437",
+  "source_revision": "bb373a2f4277b92daee593bd93b04c3117442183",
   "scope": "Read-only scope and signature verification of bundled synthetic skills using a separate absent baseline path; no skill is executed and no trust baseline is written.",
   "steps": [
     {
