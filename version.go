@@ -8,7 +8,7 @@
 // README's documented `go install github.com/SuperMarioYL/skillsig/cmd/skillsig@latest`
 // path (which passes no ldflags) produced a binary reporting "0.1.0-dev" for
 // every release. Embedding the VERSION file makes it the single source of
-// truth: a `go install ...@v0.11.0` build embeds the VERSION file from that
+// truth: a `go install ...@v0.12.0` build embeds the VERSION file from that
 // tag and reports "0.11.0", with no manual in-source literal to drift.
 package skillsig
 

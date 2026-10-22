@@ -98,23 +98,18 @@ func defaultLockPath() string {
 // Scan walks root, parses every SKILL.md, and returns one Result per skill.
 // The returned slice is stable (lexicographic by directory) so the verify
 // command's output is reproducible across machines.
+//
+// A directory that cannot be parsed does NOT abort the walk: it becomes a
+// VerdictMalformed result (via MalformedResult) and the remaining skills are
+// still evaluated, so one bad hand-authored file no longer suppresses every
+// other verdict. Only a failure of the ROOT itself (nonexistent path, walk
+// error) returns an error.
 func (s *Scanner) Scan(root string) ([]Result, error) {
-	dirs, err := manifest.FindSkillDirs(root)
+	skills, results, err := s.parseAll(root)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(dirs)
 
-	skills := make([]*manifest.Skill, 0, len(dirs))
-	for _, d := range dirs {
-		sk, err := manifest.ParseSkill(d)
-		if err != nil {
-			return nil, err
-		}
-		skills = append(skills, sk)
-	}
-
-	results := EvaluateAll(skills)
 	if s.LockPath == "" {
 		return results, nil
 	}
@@ -129,6 +124,32 @@ func (s *Scanner) Scan(root string) ([]Result, error) {
 		results[i] = applyLockDrift(r, skills[i], lock)
 	}
 	return results, nil
+}
+
+// parseAll walks root and returns, index-aligned, the parsed skills (a nil entry
+// for a dir that could not be parsed) and the per-skill results. Keeping the two
+// slices aligned is what lets the lock-drift pass index into them safely; both
+// Scan and ScanAndTrust build them here so they cannot drift apart.
+func (s *Scanner) parseAll(root string) ([]*manifest.Skill, []Result, error) {
+	dirs, err := manifest.FindSkillDirs(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	sort.Strings(dirs)
+
+	skills := make([]*manifest.Skill, 0, len(dirs))
+	results := make([]Result, 0, len(dirs))
+	for _, d := range dirs {
+		sk, err := manifest.ParseSkill(d)
+		if err != nil {
+			skills = append(skills, nil)
+			results = append(results, MalformedResult(d, err))
+			continue
+		}
+		skills = append(skills, sk)
+		results = append(results, Evaluate(sk))
+	}
+	return skills, results, nil
 }
 
 // loadLock reads s.LockPath at most once per Scanner. A missing file resolves
@@ -168,30 +189,23 @@ func (s *Scanner) loadLock() (*LockFile, error) {
 // across versions) is NOT re-baselined by default — it is reported SCOPE-DRIFTED
 // and its old baseline is left intact, so `verify --trust` can never silently
 // launder a scope escalation into the lock. Re-baselining a drifted skill on
-// purpose requires ForceTrust (the CLI's `--force-trust`). UNSIGNED skills are
-// never recorded — you only ever pin scopes you actually vouch for. Existing
-// entries for skills not in this scan are preserved (additive trust), and
-// re-trusting a clean skill refreshes its snapshot. Returns the post-write
-// results (with drift applied) so the caller can still print a table / SARIF.
+// purpose requires ForceTrust (the CLI's `--force-trust`). UNSIGNED and
+// MALFORMED skills are never recorded — you only ever pin scopes you actually
+// vouch for. Existing entries for skills not in this scan are preserved
+// (additive trust), and re-trusting a clean skill refreshes its snapshot.
+// Returns the post-write results (with drift applied) so the caller can still
+// print a table / SARIF.
+//
+// Like Scan, a directory that cannot be parsed does not abort the walk: it
+// yields a MALFORMED result and is skipped by the recording loop.
 func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 	if s.LockPath == "" {
 		return nil, errors.New("scanner: empty LockPath (cannot --trust without a lock location)")
 	}
-	dirs, err := manifest.FindSkillDirs(root)
+	skills, results, err := s.parseAll(root)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(dirs)
-
-	skills := make([]*manifest.Skill, 0, len(dirs))
-	for _, d := range dirs {
-		sk, err := manifest.ParseSkill(d)
-		if err != nil {
-			return nil, err
-		}
-		skills = append(skills, sk)
-	}
-	results := EvaluateAll(skills)
 
 	lock, err := s.loadLock()
 	if err != nil {
@@ -219,7 +233,7 @@ func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i, r := range results {
 		sk := skills[i]
-		if sk.Manifest == nil || sk.Manifest.SkillID == "" {
+		if sk == nil || sk.Manifest == nil || sk.Manifest.SkillID == "" {
 			continue
 		}
 		switch r.Verdict {
@@ -235,8 +249,8 @@ func (s *Scanner) ScanAndTrust(root string) ([]Result, error) {
 				continue
 			}
 		default:
-			// UNSIGNED / anything else is never pinned — you only trust scopes you
-			// actually vouch for.
+			// UNSIGNED / MALFORMED / anything else is never pinned — you only trust
+			// scopes you actually vouch for.
 			continue
 		}
 		// The scope verdict says the skill would be recorded; the injected gate
@@ -321,8 +335,12 @@ func (s *Scanner) Save(lock *LockFile) error {
 // "cross-version drift detected" when the current manifest's declared scope
 // has grown vs. the lock entry. A TRUSTED result becomes SCOPE-DRIFTED if any
 // of the four declared-scope axes broadened.
+//
+// A nil sk (a directory that could not be parsed, so Scan produced a
+// MALFORMED result for it) has no manifest to compare, so the result passes
+// through unchanged.
 func applyLockDrift(r Result, sk *manifest.Skill, lock *LockFile) Result {
-	if sk.Manifest == nil {
+	if sk == nil || sk.Manifest == nil {
 		return r
 	}
 	prev, ok := lock.Entries[sk.Manifest.SkillID]

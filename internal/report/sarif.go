@@ -78,17 +78,19 @@ type sarifArtifactLocation struct {
 	URI string `json:"uri"`
 }
 
-// the two rules skillsig can flag; SCOPE-DRIFTED is an error (it should block a
-// merge), UNSIGNED is a warning (a brand-new skill is not yet attested).
+// the rules skillsig can flag; SCOPE-DRIFTED and MALFORMED are errors (they
+// should block a merge), UNSIGNED is a warning (a brand-new skill is not yet
+// attested).
 const (
 	ruleScopeDrift = "skillsig/scope-drifted"
 	ruleUnsigned   = "skillsig/unsigned"
+	ruleMalformed  = "skillsig/malformed"
 )
 
 // RenderSARIF writes a SARIF 2.1.0 log to w. One result is emitted per
-// SCOPE-DRIFTED (level=error) or UNSIGNED (level=warning) skill; TRUSTED skills
-// produce no result. The rules array is always the full set so GitHub renders a
-// stable rule metadata block even on a clean run.
+// SCOPE-DRIFTED / MALFORMED (level=error) or UNSIGNED (level=warning) skill;
+// TRUSTED skills produce no result. The rules array is always the full set so
+// GitHub renders a stable rule metadata block even on a clean run.
 func RenderSARIF(w io.Writer, results []scope.Result) error {
 	run := sarifRun{
 		Tool: sarifTool{Driver: sarifDriver{
@@ -107,6 +109,12 @@ func RenderSARIF(w io.Writer, results []scope.Result) error {
 					ShortDescription: sarifText{Text: "A skill has no skillsig attestation."},
 					Properties:       sarifRuleProps{Tags: []string{"security", "supply-chain"}},
 				},
+				{
+					ID:               ruleMalformed,
+					Name:             "Malformed",
+					ShortDescription: sarifText{Text: "A skill could not be read or declares a skillsig manifest schema this build does not understand."},
+					Properties:       sarifRuleProps{Tags: []string{"security", "supply-chain"}},
+				},
 			},
 		}},
 		Results: make([]sarifResult, 0, len(results)),
@@ -117,6 +125,8 @@ func RenderSARIF(w io.Writer, results []scope.Result) error {
 		switch r.Verdict {
 		case scope.VerdictScopeDrifted:
 			ruleID, level = ruleScopeDrift, "error"
+		case scope.VerdictMalformed:
+			ruleID, level = ruleMalformed, "error"
 		case scope.VerdictUnsigned:
 			ruleID, level = ruleUnsigned, "warning"
 		default:

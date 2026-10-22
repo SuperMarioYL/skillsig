@@ -181,3 +181,103 @@ func TestScanner_SaveWritesAtomicValidLock(t *testing.T) {
 		t.Errorf("unexpected leftover file in lock dir after Save: %s (temp+rename should have removed it)", e.Name())
 	}
 }
+
+// writeMalformedCorpus builds a two-skill corpus: "good" has valid frontmatter
+// plus a matching manifest (so it evaluates TRUSTED), and "badfm" has
+// frontmatter opened with --- and never closed (so ParseSkill returns an error).
+func writeMalformedCorpus(t *testing.T) (corpus, goodDir, badDir string) {
+	t.Helper()
+	corpus = t.TempDir()
+	goodDir = filepath.Join(corpus, "good")
+	badDir = filepath.Join(corpus, "badfm")
+	for _, d := range []string{goodDir, badDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	skillMD := "---\nname: good\ndescription: d\nallowed-tools:\n  - Read\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(goodDir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write good SKILL.md: %v", err)
+	}
+	sidecar := "skillsig: v1\nskill_id: local/good\nversion: 0.1.0\ndeclares:\n  tools:\n    - Read\n"
+	if err := os.WriteFile(filepath.Join(goodDir, "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("write good SKILLSIG.yaml: %v", err)
+	}
+	// Unterminated frontmatter — the exact failure mode reproduced at the CLI.
+	broken := "---\nname: broken\ndescription: d\nallowed-tools:\n  - Read\n\nbody with no closing fence\n"
+	if err := os.WriteFile(filepath.Join(badDir, "SKILL.md"), []byte(broken), 0o644); err != nil {
+		t.Fatalf("write bad SKILL.md: %v", err)
+	}
+	return corpus, goodDir, badDir
+}
+
+// TestScan_MalformedSkillDoesNotAbortWalk is the regression for
+// fix-one-bad-skill-aborts-whole-verify. Before the fix both scan loops did
+// `sk, err := ParseSkill(d); if err != nil { return nil, err }`, so ONE
+// unreadable SKILL.md suppressed every other skill's verdict and left the CI
+// JSON / SARIF artifacts unwritten. The walk must now report the bad directory
+// as a MALFORMED row and still evaluate its neighbours.
+func TestScan_MalformedSkillDoesNotAbortWalk(t *testing.T) {
+	corpus, goodDir, badDir := writeMalformedCorpus(t)
+	s := &Scanner{LockPath: filepath.Join(t.TempDir(), LockFileName)}
+
+	results, err := s.Scan(corpus)
+	if err != nil {
+		t.Fatalf("Scan must not abort on one unparseable SKILL.md, got: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected one result per skill dir (2), got %d: %+v", len(results), results)
+	}
+	byDir := map[string]Result{}
+	for _, r := range results {
+		byDir[r.Dir] = r
+	}
+	goodRes, ok := byDir[goodDir]
+	if !ok {
+		t.Fatalf("the parseable skill is missing from the results: %+v", results)
+	}
+	if goodRes.Verdict != VerdictTrusted {
+		t.Errorf("parseable skill verdict = %v, want TRUSTED (details: %s)", goodRes.Verdict, goodRes.Details)
+	}
+	badRes, ok := byDir[badDir]
+	if !ok {
+		t.Fatalf("the malformed skill is missing from the results: %+v", results)
+	}
+	if badRes.Verdict != VerdictMalformed {
+		t.Errorf("malformed skill verdict = %v, want MALFORMED", badRes.Verdict)
+	}
+	if !strings.Contains(badRes.Details, "unterminated frontmatter") {
+		t.Errorf("malformed row details should name the parse error, got %q", badRes.Details)
+	}
+}
+
+// TestScanAndTrust_MalformedSkillIsNotPinned asserts the MALFORMED row is
+// reported but never recorded as a drift baseline: `verify --trust` only ever
+// pins scopes it can actually read and vouch for.
+func TestScanAndTrust_MalformedSkillIsNotPinned(t *testing.T) {
+	corpus, _, badDir := writeMalformedCorpus(t)
+	lockPath := filepath.Join(t.TempDir(), LockFileName)
+	s := &Scanner{LockPath: lockPath}
+
+	results, err := s.ScanAndTrust(corpus)
+	if err != nil {
+		t.Fatalf("ScanAndTrust must not abort on one unparseable SKILL.md, got: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	lf, err := (&Scanner{LockPath: lockPath}).loadLock()
+	if err != nil {
+		t.Fatalf("loadLock after ScanAndTrust: %v", err)
+	}
+	if lf == nil {
+		t.Fatalf("ScanAndTrust should have written a lock with the clean skill")
+	}
+	if _, ok := lf.Entries["local/good"]; !ok {
+		t.Errorf("the clean, parseable skill should still be pinned; entries=%+v", lf.Entries)
+	}
+	if _, ok := lf.Entries[badDir]; ok {
+		t.Errorf("the malformed skill must not be pinned; entries=%+v", lf.Entries)
+	}
+}

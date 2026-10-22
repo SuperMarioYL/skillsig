@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -77,6 +78,65 @@ func TestVersion_LockstepWithVersionFile(t *testing.T) {
 	if strings.TrimPrefix(siteVer, "v") != want {
 		t.Fatalf("web/site.json content_version %q != VERSION file %q "+
 			"(the site version surface drifted)", siteVer, want)
+	}
+
+	// CHANGELOG.md must carry a real section for the released version — a bump
+	// with no changelog entry is the same drift class in prose form.
+	cl, err := os.ReadFile("../../CHANGELOG.md")
+	if err != nil {
+		t.Fatalf("read ../../CHANGELOG.md: %v", err)
+	}
+	if !strings.Contains(string(cl), "## ["+want+"]") {
+		t.Fatalf("CHANGELOG.md has no \"## [%s]\" section (the version was "+
+			"bumped without a changelog entry)", want)
+	}
+}
+
+// TestDemoResults_MatchRenderedOutput pins docs/demo-results.json as a lockstep
+// surface. web/site.json names it as meta.demo_source and quotes its recorded
+// output verbatim on the published site, so the recorded output must equal what
+// the current binary prints for the bundled fixtures. A report-rendering change
+// that is not re-captured here (e.g. v0.12.0's malformed tally, which appended
+// ", 0 malformed" to the summary line) would otherwise silently publish output
+// the shipped binary no longer produces.
+//
+// The recorded run used a SKILLSIG_HOME pointing at a path that does not exist
+// ("an empty isolated baseline path"), so no cross-version drift applies;
+// hermeticLock reproduces that with an empty temp home. The test drives
+// runVerify — the same path the recorded command takes — so signature verdicts
+// are folded in exactly as the CLI does.
+func TestDemoResults_MatchRenderedOutput(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/demo-results.json")
+	if err != nil {
+		t.Fatalf("read ../../docs/demo-results.json: %v", err)
+	}
+	var recorded struct {
+		Steps []struct {
+			Command string `json:"command"`
+			Output  string `json:"output"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(raw, &recorded); err != nil {
+		t.Fatalf("parse docs/demo-results.json: %v", err)
+	}
+	if len(recorded.Steps) == 0 {
+		t.Fatal("docs/demo-results.json has no steps")
+	}
+
+	hermeticLock(t)
+	var b bytes.Buffer
+	if err := runVerify(&b, verifyOpts{path: filepath.Join("..", "..", "testdata", "skills")}); err != nil {
+		t.Fatalf("verify fixtures: %v", err)
+	}
+	// The recorded output is the terminal text with its trailing newline
+	// stripped; runVerify ends with fmt.Fprintln(summary).
+	got := strings.TrimRight(b.String(), "\n")
+	if want := recorded.Steps[0].Output; got != want {
+		t.Errorf("docs/demo-results.json is stale — its recorded output does "+
+			"not match what the current binary prints for the bundled fixtures.\n"+
+			"Re-run the recorded command and update the file:\n  %s\n"+
+			"--- recorded ---\n%s\n--- current ---\n%s",
+			recorded.Steps[0].Command, want, got)
 	}
 }
 

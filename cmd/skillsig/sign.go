@@ -86,7 +86,7 @@ func runSign(ctx context.Context, out io.Writer, path string, opts signOptions) 
 	if skill.Manifest == nil {
 		return fmt.Errorf("sign: %s has no skillsig manifest (run `skillsig init` first)", path)
 	}
-	if skill.Manifest.Skillsig != manifest.SkillsigVersion {
+	if !skill.Manifest.SchemaSupported() {
 		return fmt.Errorf("sign: unsupported manifest schema %q (want %q)", skill.Manifest.Skillsig, manifest.SkillsigVersion)
 	}
 	if skill.Manifest.SkillID == "" {

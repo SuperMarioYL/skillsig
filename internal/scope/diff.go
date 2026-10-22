@@ -35,7 +35,10 @@ func DiffSkills(oldDir, newDir string) ([]string, error) {
 
 // loadDeclares parses the SKILL.md at dir and returns its declared scope. A
 // skill without a skillsig manifest is an error here: diff compares declared
-// scope, so there is nothing to compare without a manifest on both sides.
+// scope, so there is nothing to compare without a manifest on both sides. A
+// manifest whose schema this build does not understand is also an error, via
+// the same manifest.Manifest.SchemaSupported rule verify and sign use — diff
+// must not compare declares it cannot interpret.
 func loadDeclares(dir string) (manifest.Declares, error) {
 	s, err := manifest.ParseSkill(dir)
 	if err != nil {
@@ -43,6 +46,10 @@ func loadDeclares(dir string) (manifest.Declares, error) {
 	}
 	if s.Manifest == nil {
 		return manifest.Declares{}, fmt.Errorf("%s: no skillsig manifest to diff", dir)
+	}
+	if !s.Manifest.SchemaSupported() {
+		return manifest.Declares{}, fmt.Errorf("%s: unsupported skillsig manifest schema %q (want %q)",
+			dir, s.Manifest.Skillsig, manifest.SkillsigVersion)
 	}
 	return s.Manifest.Declares, nil
 }

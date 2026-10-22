@@ -9,6 +9,48 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.12.0] — 2026-10-23
+
+Three verified input-robustness and trust-correctness fixes, all hunted from
+the shipped v0.11.0 source by running the binary against real SKILL.md files
+and purpose-built corpora.
+
+### Fixed
+- **`verify` can read the SKILL.md `allowed-tools` dialect the host actually
+  ships (high).** `SkillFrontmatter.AllowedTools` was a plain `[]string`, so a
+  SKILL.md that writes its grants as a single comma-separated line —
+  `allowed-tools: Read, Grep, Bash(git status)` — failed the frontmatter
+  unmarshal with `cannot unmarshal !!str ... into []string`, which aborted the
+  whole run. Both of the only two SKILL.md files on the machine this was
+  reproduced on that declare `allowed-tools` use that dialect, so the
+  documented `skillsig verify ~/.claude/skills/` path could not run on real
+  installed skills at all. `allowed-tools` now accepts either a YAML sequence
+  or a comma-separated string (entries trimmed, empties dropped) via the new
+  `manifest.StringList` type, and still marshals as a sequence so
+  `init`-seeded `declares.tools` is unchanged.
+- **One unparseable SKILL.md no longer suppresses every other verdict
+  (medium).** Both scan loops returned on the first `ParseSkill` failure, so a
+  single malformed file under the root produced no table, no `--json` object,
+  and no SARIF document at all — leaving a CI `upload-sarif` step with nothing
+  to upload. A directory that cannot be parsed is now a per-skill `MALFORMED`
+  row: the remaining skills still report, `MALFORMED` fails `--ci`, is counted
+  in the JSON summary (`summary.malformed`, and sets `drift`), and is emitted
+  as a `skillsig/malformed` SARIF result at level `error`. `verify --trust`
+  never pins a malformed skill's scope.
+- **`verify` no longer vouches for a manifest schema it cannot interpret
+  (medium).** `sign` refused a manifest whose `skillsig:` version is not `v1`,
+  but `scope.Evaluate` never looked at that field — so a `SKILLSIG.yaml`
+  declaring `skillsig: v2`, or one missing the `skillsig:` key entirely, read
+  `TRUSTED` and passed `verify --ci` while `sign` rejected the same file. The
+  rule now has one owner, `manifest.Manifest.SchemaSupported()`, used by
+  `verify`, `sign` and `diff`; an unsupported manifest reads `MALFORMED`.
+
+### Changed
+- The one-line verify summary now ends with the malformed count, e.g.
+  `3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted, 0 malformed`. CI
+  consumers that parse `--json` are unaffected; only the human-readable tally
+  line grew a field.
+
 ## [0.11.0] — 2026-09-16
 
 Two verified bug-fixes and one trust-display quality fix, all hunted from the

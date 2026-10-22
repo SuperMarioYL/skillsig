@@ -886,3 +886,211 @@ func TestRunVerify_SurfacesSignerIdentity(t *testing.T) {
 		t.Errorf("unsigned skill signed_by = %q, want empty", got)
 	}
 }
+
+// writeScalarSkill writes a skill whose SKILL.md declares allowed-tools in the
+// comma-separated SCALAR dialect (the form the host itself ships) and whose
+// sidecar manifest declares the same grants, so the scope verdict is clean.
+func writeScalarSkill(t *testing.T, root, name, skillID string, tools []string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	toolsYAML := func(indent string) string {
+		var b strings.Builder
+		for _, tl := range tools {
+			b.WriteString(indent + "- " + tl + "\n")
+		}
+		return b.String()
+	}
+	skillMD := "---\nname: " + name + "\ndescription: d\nallowed-tools: " + strings.Join(tools, ", ") + "\n---\n# " + name + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	sidecar := "skillsig: v1\nskill_id: " + skillID + "\nversion: v1\ndeclares:\n  tools:\n" + toolsYAML("    ")
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("write SKILLSIG.yaml: %v", err)
+	}
+	return dir
+}
+
+// writeSkillWithSchema is writeSkillNoBundle with an explicit `skillsig:` schema
+// version, so a test can present a manifest this build does not understand.
+func writeSkillWithSchema(t *testing.T, root, name, skillID, schema string, tools []string) string {
+	t.Helper()
+	dir := writeSkillNoBundle(t, root, name, skillID, tools)
+	raw, err := os.ReadFile(filepath.Join(dir, "SKILLSIG.yaml"))
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	fixed := strings.Replace(string(raw), "skillsig: v1", "skillsig: "+schema, 1)
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(fixed), 0o644); err != nil {
+		t.Fatalf("rewrite sidecar: %v", err)
+	}
+	return dir
+}
+
+// TestRunVerify_ScalarAllowedToolsIsReadable is the end-to-end regression for
+// fix-scalar-allowed-tools-unparseable: before the fix `verify` exited non-zero
+// with "cannot unmarshal !!str into []string" and printed no table for a skill
+// whose allowed-tools is written as a comma-separated scalar — the dialect the
+// host ships. The whole init → sign → verify round trip must work in that
+// dialect.
+func TestRunVerify_ScalarAllowedToolsIsReadable(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	tools := []string{"Read", "Grep", "Bash(git status)"}
+	dir := writeScalarSkill(t, corpus, "scalar", "examples/scalar", tools)
+
+	// (a) Unsigned: the row is reported (not an error, not MALFORMED).
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify on the scalar dialect must not fail, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "UNSIGNED") {
+		t.Errorf("expected an UNSIGNED row for the unsigned scalar-form skill; got:\n%s", out)
+	}
+	if strings.Contains(out, "MALFORMED") {
+		t.Errorf("the scalar dialect must parse, not read MALFORMED; got:\n%s", out)
+	}
+
+	// (b) Signed: the same three grants declared in the sidecar round-trip to
+	//     TRUSTED — proof the scalar form yields exactly those grants.
+	signSkillBundleAs(t, dir, "scalar@x.test")
+	var sbuf bytes.Buffer
+	if err := runVerify(&sbuf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify after sign: %v", err)
+	}
+	if s := sbuf.String(); !strings.Contains(s, "TRUSTED") || !strings.Contains(s, "(signed by scalar@x.test)") {
+		t.Errorf("scalar-form skill should round-trip to TRUSTED and name its signer; got:\n%s", s)
+	}
+}
+
+// TestRunVerify_MalformedSkillReportedNotAborted is the end-to-end regression for
+// fix-one-bad-skill-aborts-whole-verify: one unparseable SKILL.md used to abort
+// the entire run — no table, no --json object, and no SARIF document at all. It
+// must now be a per-skill MALFORMED row that fails --ci while the other skills
+// still report.
+func TestRunVerify_MalformedSkillReportedNotAborted(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	writeSkill(t, corpus, "good", "examples/good", []string{"Read"})
+	badDir := filepath.Join(corpus, "badfm")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	broken := "---\nname: broken\ndescription: d\nallowed-tools:\n  - Read\n\nno closing fence\n"
+	if err := os.WriteFile(filepath.Join(badDir, "SKILL.md"), []byte(broken), 0o644); err != nil {
+		t.Fatalf("write broken SKILL.md: %v", err)
+	}
+
+	// (a) The table reports both rows instead of erroring out.
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify must not abort on one unparseable SKILL.md, got: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "TRUSTED") || !strings.Contains(out, "MALFORMED") {
+		t.Errorf("expected both a TRUSTED and a MALFORMED row; got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 skill(s):") {
+		t.Errorf("expected the summary to count 2 skills; got:\n%s", out)
+	}
+
+	// (b) --json still emits a complete, parseable object with the new counter.
+	var jb bytes.Buffer
+	if err := runVerify(&jb, verifyOpts{path: corpus, asJSON: true}); err != nil {
+		t.Fatalf("verify --json: %v", err)
+	}
+	var got struct {
+		Summary struct {
+			Total     int `json:"total"`
+			Malformed int `json:"malformed"`
+		} `json:"summary"`
+		Drift bool `json:"drift"`
+	}
+	if err := json.Unmarshal(jb.Bytes(), &got); err != nil {
+		t.Fatalf("json output invalid: %v\n%s", err, jb.String())
+	}
+	if got.Summary.Total != 2 || got.Summary.Malformed != 1 || !got.Drift {
+		t.Errorf("json summary = %+v drift=%v, want total=2 malformed=1 drift=true", got.Summary, got.Drift)
+	}
+
+	// (c) --ci fails closed on the malformed row.
+	if err := runVerify(&bytes.Buffer{}, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("--ci on a malformed skill: got %v, want ErrCIDrift", err)
+	}
+
+	// (d) --sarif - is still a single valid SARIF document, now carrying a
+	//     malformed result (the artifact a CI upload-sarif step consumes).
+	var sarifBuf bytes.Buffer
+	if err := runVerify(&sarifBuf, verifyOpts{path: corpus, sarifPath: "-"}); err != nil {
+		t.Fatalf("verify --sarif -: %v", err)
+	}
+	var sarifLog struct {
+		Runs []struct {
+			Results []struct {
+				RuleID string `json:"ruleId"`
+				Level  string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(sarifBuf.Bytes(), &sarifLog); err != nil {
+		t.Fatalf("sarif stdout is not a single JSON document: %v\n%s", err, sarifBuf.String())
+	}
+	var sawMalformed bool
+	for _, r := range sarifLog.Runs[0].Results {
+		if r.RuleID == "skillsig/malformed" && r.Level == "error" {
+			sawMalformed = true
+		}
+	}
+	if !sawMalformed {
+		t.Errorf("expected a skillsig/malformed result at level=error; results=%+v", sarifLog.Runs[0].Results)
+	}
+}
+
+// TestRunVerify_UnsupportedManifestSchemaNotTrusted is the end-to-end regression
+// for fix-verify-vouches-unknown-manifest-schema: `skillsig sign` refuses a
+// manifest whose `skillsig:` version it does not know, but verify used to vouch
+// for it (TRUSTED, passing --ci) as long as the bundle was well-formed. The
+// permissive side of that asymmetry must be closed.
+func TestRunVerify_UnsupportedManifestSchemaNotTrusted(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	v2 := writeSkillWithSchema(t, corpus, "v2", "examples/v2", "v2", []string{"Read"})
+	signSkillBundleAs(t, v2, "v2@x.test")
+	writeSkill(t, corpus, "ok", "examples/ok", []string{"Read"})
+
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	bySkill := map[string]string{}
+	var jb bytes.Buffer
+	if err := runVerify(&jb, verifyOpts{path: corpus, asJSON: true}); err != nil {
+		t.Fatalf("verify --json: %v", err)
+	}
+	var got struct {
+		Skills []struct {
+			SkillID string `json:"skill_id"`
+			Verdict string `json:"verdict"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(jb.Bytes(), &got); err != nil {
+		t.Fatalf("json output invalid: %v", err)
+	}
+	for _, s := range got.Skills {
+		bySkill[s.SkillID] = s.Verdict
+	}
+	if v := bySkill["examples/v2"]; v != string(scope.VerdictMalformed) {
+		t.Errorf("v2 manifest verdict = %q, want MALFORMED (a schema this build cannot interpret)", v)
+	}
+	if v := bySkill["examples/ok"]; v != string(scope.VerdictTrusted) {
+		t.Errorf("v1 manifest verdict = %q, want TRUSTED (unchanged behaviour)", v)
+	}
+
+	if err := runVerify(&bytes.Buffer{}, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("--ci with a v2 manifest: got %v, want ErrCIDrift", err)
+	}
+}

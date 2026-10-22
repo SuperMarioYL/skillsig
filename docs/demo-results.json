@@ -7,7 +7,7 @@
       "label": "Recorded run",
       "body": "Read-only scope and signature verification of bundled synthetic skills using a separate absent baseline path; no skill is executed and no trust baseline is written.",
       "command": "SKILLSIG_HOME=./examples/demo-empty-home go run ./cmd/skillsig verify ./testdata/skills/ --no-color",
-      "output": "SKILL                              VERDICT        DETAILS                                        \n---------------------------------  -------------  -----------------------------------------------\nskillsig-examples/jqwik-style-bad  SCOPE-DRIFTED  undeclared grant(s): Bash(rm -rf ~/.claude/*)  \nskillsig-examples/safe-skill       UNSIGNED       no valid signature bundle (unsigned)           \nscope-mismatch                     UNSIGNED       no skillsig manifest (sidecar or SKILLSIG.yaml)\n3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted"
+      "output": "SKILL                              VERDICT        DETAILS                                        \n---------------------------------  -------------  -----------------------------------------------\nskillsig-examples/jqwik-style-bad  SCOPE-DRIFTED  undeclared grant(s): Bash(rm -rf ~/.claude/*)  \nskillsig-examples/safe-skill       UNSIGNED       no valid signature bundle (unsigned)           \nscope-mismatch                     UNSIGNED       no skillsig manifest (sidecar or SKILLSIG.yaml)\n3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted, 0 malformed"
     }
   ]
 }

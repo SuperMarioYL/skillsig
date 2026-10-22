@@ -30,7 +30,7 @@ Skill 更新可能扩大允许工具，而安装它的任务并未改变。经�
   <img src="./assets/presentation/architecture-light.svg" width="960" alt="Architecture diagram">
 </picture>
 
-Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED 或 SCOPE-DRIFTED，再渲染为表格、JSON 或 SARIF。
+Manifest 解析器读取 SKILL.md 与 SKILLSIG.yaml；范围扫描器比较授权与既有锁记录。签名校验共同决定 TRUSTED、UNSIGNED、SCOPE-DRIFTED 或 MALFORMED，再渲染为表格、JSON 或 SARIF。
 
 | 组件 | 职责 |
 | --- | --- |
@@ -72,7 +72,7 @@ SKILL                              VERDICT        DETAILS
 skillsig-examples/jqwik-style-bad  SCOPE-DRIFTED  undeclared grant(s): Bash(rm -rf ~/.claude/*)
 skillsig-examples/safe-skill       UNSIGNED       no valid signature bundle (unsigned)
 scope-mismatch                     UNSIGNED       no skillsig manifest (sidecar or SKILLSIG.yaml)
-3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted
+3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted, 0 malformed
 ```
 
 完整命令与输出保存在 [docs/demo-results.json](./docs/demo-results.json). 输入和复现代码均随仓提供。
@@ -88,7 +88,7 @@ CLI 提供以下操作。示例之外的命令需要替换成你的文件路径�
 ```bash
 go run ./cmd/skillsig verify ./testdata/skills/ --no-color
 go run ./cmd/skillsig verify ./testdata/skills/ --json
-# CI rejects unsigned or drifted rows:
+# CI rejects unsigned, drifted or unreadable rows:
 skillsig verify ./skills --ci --sarif results.sarif
 ```
 

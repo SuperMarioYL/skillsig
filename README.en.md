@@ -30,7 +30,7 @@ A skill update can broaden allowed tools without changing the task you installed
   <img src="./assets/presentation/architecture-light.svg" width="960" alt="Architecture diagram">
 </picture>
 
-Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED or SCOPE-DRIFTED verdicts, which are rendered as a table, JSON or SARIF.
+Manifest parsing combines SKILL.md and SKILLSIG.yaml inputs. The scope scanner checks grants and prior lock entries. Signature verification contributes to TRUSTED, UNSIGNED, SCOPE-DRIFTED or MALFORMED verdicts, which are rendered as a table, JSON or SARIF.
 
 | Component | Responsibility |
 | --- | --- |
@@ -72,7 +72,7 @@ SKILL                              VERDICT        DETAILS
 skillsig-examples/jqwik-style-bad  SCOPE-DRIFTED  undeclared grant(s): Bash(rm -rf ~/.claude/*)
 skillsig-examples/safe-skill       UNSIGNED       no valid signature bundle (unsigned)
 scope-mismatch                     UNSIGNED       no skillsig manifest (sidecar or SKILLSIG.yaml)
-3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted
+3 skill(s): 0 trusted, 2 unsigned, 1 scope-drifted, 0 malformed
 ```
 
 The complete command and output are recorded in [docs/demo-results.json](./docs/demo-results.json). Inputs and reproduction code are included in the repository.
@@ -88,7 +88,7 @@ The CLI exposes the following operations. Commands after the example use your ow
 ```bash
 go run ./cmd/skillsig verify ./testdata/skills/ --no-color
 go run ./cmd/skillsig verify ./testdata/skills/ --json
-# CI rejects unsigned or drifted rows:
+# CI rejects unsigned, drifted or unreadable rows:
 skillsig verify ./skills --ci --sarif results.sarif
 ```
 

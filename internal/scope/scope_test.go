@@ -1,6 +1,7 @@
 package scope
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/SuperMarioYL/skillsig/internal/manifest"
@@ -74,5 +75,52 @@ func TestScopeGrowth_LookAlikeToolTokenIsGrowth(t *testing.T) {
 	refine := manifest.Declares{Tools: []string{"Bash(git status*)", "Bash(git status -s)"}}
 	if g := scopeGrowth(prev, refine); len(g) != 0 {
 		t.Errorf("space-delimited refinement 'git status -s' must not be growth, got %v", g)
+	}
+}
+
+// TestEvaluate_UnsupportedManifestSchemaIsMalformed is the regression for
+// fix-verify-vouches-unknown-manifest-schema. `skillsig sign` refuses any
+// manifest whose `skillsig:` version is not the one this build understands, but
+// Evaluate used to ignore that field entirely and vouch for the file anyway
+// (TRUSTED, and a pass through `verify --ci`). A manifest this build cannot
+// interpret must read MALFORMED, and the rule must be the same predicate sign
+// uses (manifest.Manifest.SchemaSupported).
+func TestEvaluate_UnsupportedManifestSchemaIsMalformed(t *testing.T) {
+	skill := func(schema string) *manifest.Skill {
+		return &manifest.Skill{
+			Dir: "dir/" + schema,
+			Frontmatter: manifest.SkillFrontmatter{
+				Name:         "n",
+				AllowedTools: []string{"Read"},
+			},
+			Manifest: &manifest.Manifest{
+				Skillsig: schema,
+				SkillID:  "local/n",
+				Version:  "1.0.0",
+				Declares: manifest.Declares{Model: "m", Tools: []string{"Read"}},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		skill   *manifest.Skill
+		want    Verdict
+		details string
+	}{
+		{"v1-manifest-is-evaluated", skill(manifest.SkillsigVersion), VerdictTrusted, ""},
+		{"unknown-schema-v2", skill("v2"), VerdictMalformed, `unsupported skillsig manifest schema "v2"`},
+		{"missing-schema-key", skill(""), VerdictMalformed, `unsupported skillsig manifest schema ""`},
+		{"no-manifest-stays-unsigned", &manifest.Skill{Dir: "d", Frontmatter: manifest.SkillFrontmatter{AllowedTools: []string{"Read"}}}, VerdictUnsigned, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Evaluate(tc.skill)
+			if r.Verdict != tc.want {
+				t.Fatalf("verdict = %v, want %v (details: %s)", r.Verdict, tc.want, r.Details)
+			}
+			if tc.details != "" && !strings.Contains(r.Details, tc.details) {
+				t.Errorf("details = %q, want it to contain %q", r.Details, tc.details)
+			}
+		})
 	}
 }

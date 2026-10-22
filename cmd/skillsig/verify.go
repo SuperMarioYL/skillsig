@@ -17,8 +17,8 @@ import (
 )
 
 // ErrCIDrift is returned (and surfaces as exit-1) when --ci is set and any row
-// of the verify table is UNSIGNED or SCOPE-DRIFTED. Exposed as a value so
-// scripts can grep for it in stderr if they ever want to.
+// of the verify table is UNSIGNED, SCOPE-DRIFTED or MALFORMED. Exposed as a
+// value so scripts can grep for it in stderr if they ever want to.
 var ErrCIDrift = errors.New("skill scope drift detected (--ci)")
 
 func newVerifyCmd() *cobra.Command {
@@ -182,7 +182,8 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 
 	if opts.ci {
 		for _, r := range results {
-			if r.Verdict == scope.VerdictUnsigned || r.Verdict == scope.VerdictScopeDrifted {
+			switch r.Verdict {
+			case scope.VerdictUnsigned, scope.VerdictScopeDrifted, scope.VerdictMalformed:
 				return ErrCIDrift
 			}
 		}

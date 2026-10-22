@@ -17,11 +17,12 @@ import (
 // Style holds the lipgloss styles for each verdict. They are package-level so
 // tests can introspect them, and so they're computed once.
 var (
-	styleTrusted  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")) // green
-	styleUnsigned = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // yellow
-	styleDrifted  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))  // red
-	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	styleMuted    = lipgloss.NewStyle().Faint(true)
+	styleTrusted   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")) // green
+	styleUnsigned  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")) // yellow
+	styleDrifted   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))  // red
+	styleMalformed = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("13")) // magenta
+	styleHeader    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	styleMuted     = lipgloss.NewStyle().Faint(true)
 )
 
 // Render writes a fixed-width 3-column table (Skill | Verdict | Details) to w.
@@ -96,9 +97,10 @@ type jsonSkill struct {
 }
 
 // jsonReport is the top-level object RenderJSON writes: the per-skill rows plus
-// a tally and a single drift flag. drift is true when any row is UNSIGNED or
-// SCOPE-DRIFTED — the same condition `verify --ci` exits non-zero on — so a CI
-// step can branch on `.drift` without re-deriving it from the counts.
+// a tally and a single drift flag. drift is true when any row is UNSIGNED,
+// SCOPE-DRIFTED or MALFORMED — the same condition `verify --ci` exits non-zero
+// on — so a CI step can branch on `.drift` without re-deriving it from the
+// counts.
 type jsonReport struct {
 	Skills  []jsonSkill `json:"skills"`
 	Summary jsonSummary `json:"summary"`
@@ -110,6 +112,7 @@ type jsonSummary struct {
 	Trusted    int `json:"trusted"`
 	Unsigned   int `json:"unsigned"`
 	ScopeDrift int `json:"scope_drifted"`
+	Malformed  int `json:"malformed"`
 }
 
 // RenderJSON writes the results as a single indented JSON object to w. This is
@@ -135,6 +138,9 @@ func RenderJSON(w io.Writer, results []scope.Result) error {
 		case scope.VerdictScopeDrifted:
 			rep.Summary.ScopeDrift++
 			rep.Drift = true
+		case scope.VerdictMalformed:
+			rep.Summary.Malformed++
+			rep.Drift = true
 		}
 	}
 	enc := json.NewEncoder(w)
@@ -144,7 +150,7 @@ func RenderJSON(w io.Writer, results []scope.Result) error {
 
 // Summary is a one-line tally printed under the table. Useful for CI logs.
 func Summary(results []scope.Result) string {
-	var t, u, d int
+	var t, u, d, m int
 	for _, r := range results {
 		switch r.Verdict {
 		case scope.VerdictTrusted:
@@ -153,10 +159,12 @@ func Summary(results []scope.Result) string {
 			u++
 		case scope.VerdictScopeDrifted:
 			d++
+		case scope.VerdictMalformed:
+			m++
 		}
 	}
-	return fmt.Sprintf("%d skill(s): %d trusted, %d unsigned, %d scope-drifted",
-		len(results), t, u, d)
+	return fmt.Sprintf("%d skill(s): %d trusted, %d unsigned, %d scope-drifted, %d malformed",
+		len(results), t, u, d, m)
 }
 
 func verdictStyle(v scope.Verdict) lipgloss.Style {
@@ -167,6 +175,8 @@ func verdictStyle(v scope.Verdict) lipgloss.Style {
 		return styleUnsigned
 	case scope.VerdictScopeDrifted:
 		return styleDrifted
+	case scope.VerdictMalformed:
+		return styleMalformed
 	}
 	return lipgloss.NewStyle()
 }

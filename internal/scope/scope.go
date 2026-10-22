@@ -7,6 +7,7 @@
 package scope
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -20,6 +21,15 @@ const (
 	VerdictTrusted      Verdict = "TRUSTED"
 	VerdictUnsigned     Verdict = "UNSIGNED"
 	VerdictScopeDrifted Verdict = "SCOPE-DRIFTED"
+
+	// VerdictMalformed is the outcome for a skill this build cannot interpret:
+	// either its SKILL.md (or manifest) could not be read at all, or it carries a
+	// `skillsig:` schema version this build does not understand. It is deliberately
+	// distinct from UNSIGNED — "no attestation" and "cannot be read" are different
+	// facts, and a CI policy that means "every skill must be signed" must not be
+	// told that an unreadable file merely needs signing. Like UNSIGNED and
+	// SCOPE-DRIFTED it fails `verify --ci`.
+	VerdictMalformed Verdict = "MALFORMED"
 )
 
 // Result is what the report renders. Details is a short, human-readable
@@ -41,6 +51,10 @@ type Result struct {
 // Evaluate returns the verdict for one parsed skill against m1 rules:
 //
 //   - No skillsig manifest → UNSIGNED.
+//   - Manifest present but its `skillsig:` schema version is not one this build
+//     understands → MALFORMED. This is the same rule `skillsig sign` enforces
+//     (via manifest.Manifest.SchemaSupported), so verify can never vouch for a
+//     manifest sign would refuse to sign.
 //   - Manifest present, every entry in SKILL.md allowed-tools is covered by
 //     declares.tools (literal match OR matched by a declared glob like
 //     "Bash(git status*)") → TRUSTED.
@@ -61,6 +75,11 @@ func Evaluate(s *manifest.Skill) Result {
 		r.Details = "no skillsig manifest (sidecar or SKILLSIG.yaml)"
 		return r
 	}
+	if !s.Manifest.SchemaSupported() {
+		r.Verdict = VerdictMalformed
+		r.Details = fmt.Sprintf("unsupported skillsig manifest schema %q (want %q)", s.Manifest.Skillsig, manifest.SkillsigVersion)
+		return r
+	}
 	drift := compareTools(s.Manifest.Declares.Tools, s.Frontmatter.AllowedTools)
 	if len(drift) == 0 {
 		r.Verdict = VerdictTrusted
@@ -70,6 +89,21 @@ func Evaluate(s *manifest.Skill) Result {
 	r.Verdict = VerdictScopeDrifted
 	r.Details = "undeclared grant(s): " + strings.Join(drift, ", ")
 	return r
+}
+
+// MalformedResult is the per-skill outcome for a directory whose SKILL.md or
+// manifest could not be read into a skill this build understands. The scanner
+// calls it instead of aborting the walk, so one unreadable file no longer
+// suppresses every other skill's verdict (and no longer leaves the CI JSON and
+// SARIF artifacts unwritten). The directory path is the only honest identifier
+// available — the frontmatter could not be parsed far enough to name the skill.
+func MalformedResult(dir string, err error) Result {
+	return Result{
+		SkillID: dir,
+		Dir:     dir,
+		Verdict: VerdictMalformed,
+		Details: err.Error(),
+	}
 }
 
 // EvaluateAll is a small convenience for the verify command.
