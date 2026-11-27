@@ -97,10 +97,9 @@ type jsonSkill struct {
 }
 
 // jsonReport is the top-level object RenderJSON writes: the per-skill rows plus
-// a tally and a single drift flag. drift is true when any row is UNSIGNED,
-// SCOPE-DRIFTED or MALFORMED — the same condition `verify --ci` exits non-zero
-// on — so a CI step can branch on `.drift` without re-deriving it from the
-// counts.
+// a tally and a single drift flag. drift is true when the run must fail a CI
+// merge gate — the same condition `verify --ci` exits non-zero on (see FailsCI)
+// — so a CI step can branch on `.drift` without re-deriving it from the counts.
 type jsonReport struct {
 	Skills  []jsonSkill `json:"skills"`
 	Summary jsonSummary `json:"summary"`
@@ -113,6 +112,28 @@ type jsonSummary struct {
 	Unsigned   int `json:"unsigned"`
 	ScopeDrift int `json:"scope_drifted"`
 	Malformed  int `json:"malformed"`
+}
+
+// FailsCI reports whether a verify run must exit non-zero under --ci: any row
+// that is not TRUSTED, or a walk that found no skills at all.
+//
+// It is the SINGLE owner of "was this run clean", shared by the JSON `drift`
+// field and the CLI's exit status, so the two cannot disagree. Zero rows is a
+// failure because a merge gate that inspected nothing has verified nothing: a
+// wrong or empty path (a checkout whose skills-install step did not run, a
+// renamed directory) must not read as success — the same fail-closed posture
+// MALFORMED and the --trust gate already take.
+func FailsCI(results []scope.Result) bool {
+	if len(results) == 0 {
+		return true
+	}
+	for _, r := range results {
+		switch r.Verdict {
+		case scope.VerdictUnsigned, scope.VerdictScopeDrifted, scope.VerdictMalformed:
+			return true
+		}
+	}
+	return false
 }
 
 // RenderJSON writes the results as a single indented JSON object to w. This is
@@ -134,15 +155,13 @@ func RenderJSON(w io.Writer, results []scope.Result) error {
 			rep.Summary.Trusted++
 		case scope.VerdictUnsigned:
 			rep.Summary.Unsigned++
-			rep.Drift = true
 		case scope.VerdictScopeDrifted:
 			rep.Summary.ScopeDrift++
-			rep.Drift = true
 		case scope.VerdictMalformed:
 			rep.Summary.Malformed++
-			rep.Drift = true
 		}
 	}
+	rep.Drift = FailsCI(results)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(rep)

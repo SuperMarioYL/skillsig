@@ -9,6 +9,64 @@ All notable changes to skillsig are tracked here. Format roughly follows
 Nothing yet — the hosted-mirror tier (`skillsig.cloud` + team policy +
 webhook alerts) is next.
 
+## [0.13.0] — 2026-11-28
+
+Four verified gate- and trust-correctness fixes, all hunted from the shipped
+v0.12.0 source by running the binary against purpose-built SKILL.md corpora.
+
+### Fixed
+- **`verify --ci` no longer passes a run that inspected zero skills (high).**
+  `runVerify` returned as soon as the walk produced no rows — before the `--ci`
+  gate — so `skillsig verify <dir> --ci` on an existing-but-empty directory
+  printed "no SKILL.md files found under <dir>" and exited 0, and `--json`
+  emitted `"drift": false` for a run that examined nothing. A merge gate whose
+  path argument is wrong (a checkout whose skills-install step did not run, a
+  renamed directory) therefore read as clean, and the JSON document contradicted
+  its own contract that `drift` is the condition `--ci` exits non-zero on. The
+  rule now has one owner, `report.FailsCI` (zero rows OR any row not TRUSTED),
+  used by both the JSON `drift` field and the exit status; the empty-corpus CI
+  case returns the new `ErrNoSkills` instead of the misleading "drift detected"
+  error. Interactive (non-`--ci`) runs are unchanged.
+- **A comment-headed inline manifest is now read instead of being skipped for a
+  stale sibling (high).** The fenced-block detector required the block's first
+  non-blank line to literally start with `skillsig:`, so a YAML comment above the
+  mapping — legal YAML, same manifest — made the block invisible. `ParseSkill`
+  then fell through to the sibling `SKILLSIG.yaml`, and `sign` attested the STALE
+  manifest while the file the author had edited was dead text (reproduced:
+  `sign` printed version `1.0.0` from the sibling while the inline block said
+  `2.0.0`; a narrowed inline scope passed `verify` as TRUSTED). Detection now
+  lives in one owner, `manifest.FindSkillsigFence`, which skips leading blank
+  lines, `#` comments and a `---` document marker; it is also the only fence
+  scanner `init` uses, so the block `init --force` replaces is by construction
+  the block `ParseSkill` reads. Detection stays textual, so a block that names
+  `skillsig:` but is unparseable still reports MALFORMED.
+- **Quoted grants in the comma-separated `allowed-tools` dialect are unquoted
+  (medium).** `splitCommaList` only trimmed each entry, so
+  `allowed-tools: Read, "Bash(git status*)"` produced a grant whose name kept its
+  literal quotes — a false `SCOPE-DRIFTED` (and a failing `--ci`) against a
+  manifest declaring the same grant as a YAML sequence, which the YAML parser
+  had already unquoted. This is the form the schema's own docs show as accepted.
+  One symmetric pair of surrounding single or double quotes is now dropped after
+  trimming, which also keeps quotes out of the `declares.tools` that `init`
+  seeds and out of the canonical signed payload. Entries that merely contain
+  quotes (`Bash(echo "hi")`) are unchanged.
+- **A manifest with keys outside the v1 schema is refused instead of silently
+  narrowed (medium).** Both manifest sources were decoded with plain
+  `yaml.Unmarshal`, which drops unknown keys. A misspelled `declares:` therefore
+  decoded to an EMPTY declared scope: `sign` attested that empty scope and
+  `verify --ci` read TRUSTED, while the author's `fs_write` / `network_egress`
+  declarations were absent from the signed payload. Decoding now goes through one
+  owner, `manifest.parseManifest`, with `KnownFields` enabled, so an unknown key
+  is a parse error and the skill reads `MALFORMED` (and `sign` refuses it) — the
+  same posture v0.12.0 established for a `skillsig:` version this build cannot
+  interpret. The SKILL.md frontmatter decode stays lenient: its keys are
+  host-owned, not part of the skillsig schema.
+
+### Changed
+- `verify --json`'s `drift` field is now `true` for a run that found no skills
+  (see above). Consumers that treated `drift: false` with `summary.total: 0` as
+  clean will now see the same failure `--ci` reports.
+
 ## [0.12.0] — 2026-10-23
 
 Three verified input-robustness and trust-correctness fixes, all hunted from

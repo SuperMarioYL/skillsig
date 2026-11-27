@@ -21,6 +21,13 @@ import (
 // value so scripts can grep for it in stderr if they ever want to.
 var ErrCIDrift = errors.New("skill scope drift detected (--ci)")
 
+// ErrNoSkills is returned when --ci is set and the walk found no SKILL.md at
+// all. A merge gate that inspected nothing has verified nothing, so it must not
+// exit 0: a wrong or empty path (a checkout whose skills-install step did not
+// run, a renamed directory) would otherwise turn the gate green while the JSON
+// report claimed `drift: false` for zero inspected skills.
+var ErrNoSkills = errors.New("no SKILL.md files found to verify (--ci)")
+
 func newVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify [path]",
@@ -48,7 +55,7 @@ func newVerifyCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().Bool("ci", false, "exit non-zero on UNSIGNED or SCOPE-DRIFTED rows")
+	cmd.Flags().Bool("ci", false, "exit non-zero on UNSIGNED, SCOPE-DRIFTED or MALFORMED rows, or when no SKILL.md was found at all")
 	cmd.Flags().Bool("no-color", false, "disable color output (stable for diffing)")
 	cmd.Flags().Bool("json", false, "emit a machine-readable JSON report instead of the table")
 	cmd.Flags().String("sarif", "", "also write a SARIF 2.1.0 report to this path (\"-\" for stdout) for GitHub code-scanning")
@@ -157,6 +164,12 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 				return err
 			}
 		}
+		// ...but an empty tree is never a clean CI run. report.FailsCI (which the
+		// JSON `drift` field also uses) treats zero rows as failure; the error is
+		// distinct from ErrCIDrift because no skill drifted — nothing was inspected.
+		if opts.ci {
+			return fmt.Errorf("%w: %s", ErrNoSkills, opts.path)
+		}
 		return nil
 	}
 
@@ -180,13 +193,8 @@ func runVerify(out io.Writer, opts verifyOpts) error {
 		}
 	}
 
-	if opts.ci {
-		for _, r := range results {
-			switch r.Verdict {
-			case scope.VerdictUnsigned, scope.VerdictScopeDrifted, scope.VerdictMalformed:
-				return ErrCIDrift
-			}
-		}
+	if opts.ci && report.FailsCI(results) {
+		return ErrCIDrift
 	}
 	return nil
 }

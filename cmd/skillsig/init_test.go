@@ -294,3 +294,52 @@ func TestRunInit_ForceSiblingLeavesSKILLMDWithoutFenceUntouched(t *testing.T) {
 		t.Errorf("expected SKILLSIG.yaml to be written: %v", err)
 	}
 }
+
+// TestRunInit_InlineForceReplacesCommentHeadedBlock is the writer-side lockstep
+// for fix-comment-headed-inline-manifest-ignored: the block `init --force`
+// replaces must be the block ParseSkill reads. Before the fix, fence detection
+// lived in two copies (parse.go's extractSidecar, init.go's findSkillsigFence)
+// and neither recognised a comment-headed block; now both call
+// manifest.FindSkillsigFence, so a comment-headed block is found, replaced in
+// place, and left as the only skillsig block in the file.
+func TestRunInit_InlineForceReplacesCommentHeadedBlock(t *testing.T) {
+	dir := t.TempDir()
+	skillMD := "---\nname: demo\ndescription: d\nallowed-tools:\n  - Read\n---\n\n# demo\n\n```yaml\n# stale manifest\nskillsig: v1\nskill_id: local/demo\nversion: 0.0.1\ndeclares:\n  model: claude-opus-4-stale\n  tools:\n    - Read\n```\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runInit(&buf, dir, initOptions{
+		inline:  true,
+		force:   true,
+		skillID: "local/demo",
+		version: "0.1.0",
+		model:   "claude-opus-4-fresh",
+	}); err != nil {
+		t.Fatalf("runInit --inline --force: %v", err)
+	}
+
+	sk, err := manifest.ParseSkill(dir)
+	if err != nil {
+		t.Fatalf("parse after re-init: %v", err)
+	}
+	if sk.Manifest == nil {
+		t.Fatalf("expected a manifest after re-init, got nil (src=%q)", sk.ManifestSrc)
+	}
+	if sk.Manifest.Declares.Model != "claude-opus-4-fresh" {
+		t.Errorf("manifest model = %q, want the regenerated one (the comment-headed stale block was not replaced)",
+			sk.Manifest.Declares.Model)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read SKILL.md: %v", err)
+	}
+	body := string(raw)
+	if got := strings.Count(body, "skillsig: v1"); got != 1 {
+		t.Errorf("expected exactly 1 skillsig block after --force, got %d; SKILL.md:\n%s", got, body)
+	}
+	if strings.Contains(body, "claude-opus-4-stale") {
+		t.Errorf("the stale comment-headed block survived --force; SKILL.md:\n%s", body)
+	}
+}

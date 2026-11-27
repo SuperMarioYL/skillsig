@@ -1094,3 +1094,170 @@ func TestRunVerify_UnsupportedManifestSchemaNotTrusted(t *testing.T) {
 		t.Errorf("--ci with a v2 manifest: got %v, want ErrCIDrift", err)
 	}
 }
+
+// TestRunVerify_CIFailsOnEmptyCorpus is the regression for
+// fix-verify-ci-passes-on-empty-corpus. runVerify short-circuited on zero rows
+// and returned nil before the --ci gate ran, so a merge gate pointed at an
+// existing-but-empty directory (a checkout whose skills-install step never ran,
+// a renamed dir) reported success while verifying nothing.
+func TestRunVerify_CIFailsOnEmptyCorpus(t *testing.T) {
+	hermeticLock(t)
+	empty := t.TempDir()
+
+	var buf bytes.Buffer
+	err := runVerify(&buf, verifyOpts{path: empty, ci: true})
+	if !errors.Is(err, ErrNoSkills) {
+		t.Fatalf("verify --ci on an empty corpus: got err=%v, want ErrNoSkills", err)
+	}
+	if errors.Is(err, ErrCIDrift) {
+		t.Errorf("an empty corpus did not DRIFT (nothing was inspected); the error must be ErrNoSkills, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "no SKILL.md files found under") {
+		t.Errorf("the human hint should still be printed; got:\n%s", buf.String())
+	}
+
+	// Without --ci the interactive behaviour is unchanged: print and succeed.
+	buf.Reset()
+	if err := runVerify(&buf, verifyOpts{path: empty}); err != nil {
+		t.Fatalf("non-CI verify on an empty corpus should still succeed: %v", err)
+	}
+}
+
+// TestRunVerify_EmptyCorpusJSONReportsDrift pins the other half of the same
+// defect: the JSON document stated "drift": false for a run that examined zero
+// skills, contradicting its own contract that drift is the condition --ci exits
+// non-zero on. Both surfaces now come from report.FailsCI.
+func TestRunVerify_EmptyCorpusJSONReportsDrift(t *testing.T) {
+	hermeticLock(t)
+	var buf bytes.Buffer
+	err := runVerify(&buf, verifyOpts{path: t.TempDir(), asJSON: true, ci: true})
+	if !errors.Is(err, ErrNoSkills) {
+		t.Fatalf("verify --ci --json on an empty corpus: got err=%v, want ErrNoSkills", err)
+	}
+	var got struct {
+		Summary struct {
+			Total int `json:"total"`
+		} `json:"summary"`
+		Drift bool `json:"drift"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if got.Summary.Total != 0 {
+		t.Errorf("summary.total = %d, want 0", got.Summary.Total)
+	}
+	if !got.Drift {
+		t.Error(`drift = false for a run that inspected ZERO skills; a gate that verified nothing must not read as clean`)
+	}
+}
+
+// TestRunVerify_CommentHeadedInlineBeatsStaleSibling is the end-to-end
+// regression for fix-comment-headed-inline-manifest-ignored. The fresh inline
+// block declares only Read (the author narrowed the skill) and starts with a
+// YAML comment; a stale SKILLSIG.yaml next to it still declares the removed
+// grant. Before the fix the inline block was invisible, so verify read the stale
+// sibling — declaring exactly the runtime grants — and never flagged the
+// escalation the author had just removed.
+func TestRunVerify_CommentHeadedInlineBeatsStaleSibling(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	dir := filepath.Join(corpus, "narrowed")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	skillMD := "---\nname: narrowed\ndescription: d\nallowed-tools:\n  - Read\n  - Bash(rm -rf /)\n---\nbody\n\n" +
+		"```yaml\n# skillsig manifest (narrowed to Read only)\nskillsig: v1\nskill_id: examples/narrowed\nversion: 2.0.0\n" +
+		"declares:\n  tools:\n    - Read\n```\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	stale := "skillsig: v1\nskill_id: examples/narrowed\nversion: 1.0.0\ndeclares:\n  tools:\n    - Read\n    - Bash(rm -rf /)\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(stale), 0o644); err != nil {
+		t.Fatalf("write stale SKILLSIG.yaml: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, string(scope.VerdictScopeDrifted)) {
+		t.Fatalf("expected SCOPE-DRIFTED (the inline block does not declare Bash(rm -rf /)); got:\n%s", out)
+	}
+	if !strings.Contains(out, "Bash(rm -rf /)") {
+		t.Errorf("the drift row should name the grant the inline block removed; got:\n%s", out)
+	}
+}
+
+// TestRunVerify_QuotedScalarGrantNotDrifted is the end-to-end regression for
+// fix-quoted-allowed-tools-entry-not-unquoted: a SKILL.md in the documented
+// comma-separated dialect with a quoted grant, against a manifest declaring the
+// same grant as a YAML sequence, used to read SCOPE-DRIFTED because the quotes
+// were kept as part of the grant name.
+func TestRunVerify_QuotedScalarGrantNotDrifted(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	dir := filepath.Join(corpus, "quoted")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	skillMD := "---\nname: quoted\ndescription: d\nallowed-tools: Read, \"Bash(git status*)\"\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	sidecar := "skillsig: v1\nskill_id: examples/quoted\nversion: 1.0.0\ndeclares:\n  tools:\n    - Read\n    - \"Bash(git status*)\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("write SKILLSIG.yaml: %v", err)
+	}
+	signSkillBundle(t, dir)
+
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus, ci: true}); err != nil {
+		t.Fatalf("a correctly declared quoted grant must not fail --ci, got %v:\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), string(scope.VerdictTrusted)) {
+		t.Errorf("expected TRUSTED; got:\n%s", buf.String())
+	}
+}
+
+// TestRunVerify_UnknownManifestKeyMalformed is the end-to-end regression for
+// fix-manifest-unknown-keys-silently-dropped. The manifest's `declares:` is
+// misspelled, so the decoded scope used to be EMPTY: sign attested nothing and
+// verify read TRUSTED. It must now be MALFORMED, fail --ci, and be refused by
+// sign.
+func TestRunVerify_UnknownManifestKeyMalformed(t *testing.T) {
+	hermeticLock(t)
+	corpus := t.TempDir()
+	dir := filepath.Join(corpus, "typo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	skillMD := "---\nname: typo\ndescription: d\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	sidecar := "skillsig: v1\nskill_id: examples/typo\nversion: 1.0.0\ndecares:\n  fs_write:\n    - \"/etc/**\"\n  network_egress:\n    - \"*\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILLSIG.yaml"), []byte(sidecar), 0o644); err != nil {
+		t.Fatalf("write SKILLSIG.yaml: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runVerify(&buf, verifyOpts{path: corpus, asJSON: true}); err != nil {
+		t.Fatalf("verify --json must report the malformed row, not abort: %v", err)
+	}
+	if !strings.Contains(buf.String(), string(scope.VerdictMalformed)) {
+		t.Errorf("a manifest with an unknown key must read MALFORMED; got:\n%s", buf.String())
+	}
+	if err := runVerify(&bytes.Buffer{}, verifyOpts{path: corpus, ci: true}); !errors.Is(err, ErrCIDrift) {
+		t.Errorf("--ci with a malformed-key manifest: got %v, want ErrCIDrift", err)
+	}
+
+	// sign must refuse it (and write no bundle) rather than attest a scope it
+	// could not fully read.
+	if err := runSign(context.Background(), &bytes.Buffer{}, dir, signOptions{}); err == nil {
+		t.Error("sign accepted a manifest with a key outside the v1 schema")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skillsig.bundle")); !os.IsNotExist(err) {
+		t.Error("sign wrote a bundle for a manifest it could not interpret")
+	}
+}

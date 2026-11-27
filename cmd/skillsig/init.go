@@ -208,19 +208,19 @@ func writeSidecar(dest string, data []byte, force bool) error {
 // Without --force, a body that already contains a fenced "skillsig:" block is
 // rejected (the caller has already gated on --force, but we defend here too).
 //
-// With --force, the FIRST existing fenced "skillsig:" block is REPLACED IN
+// With --force, the FIRST existing fenced skillsig block is REPLACED IN
 // PLACE — its opening fence through its closing fence is spliced out and the
 // regenerated block is written at the same position. This is the fix for the
 // stale-block bug: previously --force skipped the "already contains" guard and
 // then unconditionally APPENDED a second fenced block, so the file carried two
-// skillsig blocks and extractSidecar (internal/manifest/parse.go) — which
-// returns the FIRST fenced block whose content begins with "skillsig:" — kept
-// reading the stale manifest, leaving the freshly regenerated one as dead text.
-// The doc comment here used to claim it "rewrites it in place"; now it does.
+// skillsig blocks and manifest.FindSkillsigFence — which returns the first one —
+// kept reading the stale manifest, leaving the freshly regenerated one as dead
+// text. The doc comment here used to claim it "rewrites it in place"; now it
+// does.
 //
-// If no fenced "skillsig:" block exists, the new block is appended at the end
-// of the body (separated by a blank line and a header), matching the original
-// first-run behavior.
+// If no skillsig block exists, the new block is appended at the end of the body
+// (separated by a blank line and a header), matching the original first-run
+// behavior.
 func appendInline(dest string, manifestYAML []byte, force bool) error {
 	raw, err := os.ReadFile(dest)
 	if err != nil {
@@ -228,7 +228,7 @@ func appendInline(dest string, manifestYAML []byte, force bool) error {
 	}
 	body := string(raw)
 
-	start, end, hasBlock := findSkillsigFence(body)
+	fence, hasBlock := manifest.FindSkillsigFence([]byte(body))
 	if hasBlock && !force {
 		return fmt.Errorf("%s already contains a skillsig block; pass --force to rewrite", dest)
 	}
@@ -240,8 +240,8 @@ func appendInline(dest string, manifestYAML []byte, force bool) error {
 		// Replace the old fenced skillsig block in place: keep everything before
 		// the opening fence and after the closing fence, and splice the regenerated
 		// block into the same position. The file ends up with exactly one
-		// skillsig block and extractSidecar picks up the new content.
-		out = body[:start] + block + body[end:]
+		// skillsig block and ParseSkill picks up the new content.
+		out = body[:fence.Start] + block + body[fence.End:]
 	} else {
 		// No existing block: append at the end, separated by a blank line and a
 		// header so the manifest is visually distinct from the skill body.
@@ -265,68 +265,30 @@ func buildInlineBlock(manifestYAML []byte) string {
 	return b.String()
 }
 
-// removeSkillsigFence splices the first fenced "skillsig:" block (opening
-// fence through closing fence, including the closing fence's trailing newline)
-// out of the SKILL.md at path. It is the sibling-mode counterpart of
-// appendInline's in-place replace: when `init --force` regenerates the
-// manifest as SKILLSIG.yaml, the stale inline block must be removed or
-// ParseSkill keeps reading it (extractSidecar checks the inline block first)
-// and the regenerated sibling manifest is dead text. A file with no skillsig
-// fence is left untouched. Any prose around the block (e.g. the "## skillsig
-// manifest" header appendInline adds) is left as-is — only the fence itself
-// is load-bearing for parsing.
+// removeSkillsigFence splices the first fenced skillsig block (opening fence
+// through closing fence, including the closing fence's trailing newline) out of
+// the SKILL.md at path. It is the sibling-mode counterpart of appendInline's
+// in-place replace: when `init --force` regenerates the manifest as
+// SKILLSIG.yaml, the stale inline block must be removed or ParseSkill keeps
+// reading it (the inline block wins over the sibling) and the regenerated
+// sibling manifest is dead text. A file with no skillsig fence is left
+// untouched. Any prose around the block (e.g. the "## skillsig manifest" header
+// appendInline adds) is left as-is — only the fence itself is load-bearing for
+// parsing.
+//
+// Both this and appendInline locate the block with manifest.FindSkillsigFence,
+// the same owner ParseSkill parses with, so init can never rewrite a different
+// block than the one verify reads back.
 func removeSkillsigFence(path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	body := string(raw)
-	start, end, ok := findSkillsigFence(body)
+	fence, ok := manifest.FindSkillsigFence([]byte(body))
 	if !ok {
 		return nil
 	}
-	out := body[:start] + body[end:]
+	out := body[:fence.Start] + body[fence.End:]
 	return os.WriteFile(path, []byte(out), 0o644)
-}
-
-// findSkillsigFence returns the byte offsets [start, end) of the first fenced
-// code block in body whose content begins with "skillsig:", including the
-// opening and closing fence lines (and the closing fence's trailing newline if
-// present). ok is false when no such block exists.
-//
-// It mirrors the extraction logic in extractSidecar
-// (internal/manifest/parse.go) so the block appendInline replaces is exactly the
-// block ParseSkill will read back on the next parse — same fence detection
-// (line whose TrimSpace begins with "```"), same content accumulation, same
-// "first non-blank key begins with skillsig:" predicate.
-func findSkillsigFence(body string) (start, end int, ok bool) {
-	lines := strings.SplitAfter(body, "\n")
-	inFence := false
-	var fence strings.Builder
-	fenceStart := 0
-	off := 0
-	for _, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		if !inFence {
-			if strings.HasPrefix(trim, "```") {
-				inFence = true
-				fence.Reset()
-				fenceStart = off
-			}
-		} else {
-			if strings.HasPrefix(trim, "```") {
-				// Closing fence: does this block's content begin with "skillsig:"?
-				candidate := fence.String()
-				head := strings.TrimLeft(candidate, " \t\n\r")
-				if strings.HasPrefix(head, "skillsig:") {
-					return fenceStart, off + len(ln), true
-				}
-				inFence = false
-			} else {
-				fence.WriteString(ln)
-			}
-		}
-		off += len(ln)
-	}
-	return 0, 0, false
 }

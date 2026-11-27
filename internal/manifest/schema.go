@@ -108,16 +108,36 @@ func (l *StringList) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // splitCommaList turns "Read, , Grep" into ["Read", "Grep"]: entries are
-// whitespace-trimmed and empty ones dropped, matching the scope package's
-// normalization of every other grant list.
+// whitespace-trimmed, one symmetric pair of surrounding quotes is dropped, and
+// empty ones are dropped, matching the scope package's normalization of every
+// other grant list.
+//
+// The unquoting is what keeps the two accepted dialects naming the same grant.
+// The YAML sequence dialect gets its quotes stripped by the YAML parser; this
+// dialect must do the same or `allowed-tools: Read, "Bash(git status*)"` yields
+// a grant whose name literally contains quotes, which no declaration can cover
+// — a false SCOPE-DRIFTED on a correctly declared skill, and quotes smeared
+// into declares.tools by `skillsig init`.
 func splitCommaList(raw string) StringList {
 	var out []string
 	for _, part := range strings.Split(raw, ",") {
-		if p := strings.TrimSpace(part); p != "" {
+		if p := unquoteGrant(part); p != "" {
 			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// unquoteGrant trims one comma-separated entry and drops a matching pair of
+// surrounding single or double quotes. Entries whose quotes do not surround the
+// whole entry (`Bash(echo "hi")`) or that use mismatched quotes are returned
+// unchanged apart from the trim.
+func unquoteGrant(entry string) string {
+	p := strings.TrimSpace(entry)
+	if len(p) >= 2 && (p[0] == '"' || p[0] == '\'') && p[len(p)-1] == p[0] {
+		p = strings.TrimSpace(p[1 : len(p)-1])
+	}
+	return p
 }
 
 // Skill is one parsed SKILL.md plus its skillsig manifest (if any). A nil
