@@ -50,8 +50,8 @@
         "zh": "接入 CI 输出"
       },
       "body": {
-        "en": "JSON, SARIF and exit codes support automation.",
-        "zh": "JSON、SARIF 与退出码可接入自动化。"
+        "en": "JSON, SARIF and exit codes support automation. A CI run fails when any row is unsigned, drifted or malformed — and when the scan found no SKILL.md at all.",
+        "zh": "JSON、SARIF 与退出码可接入自动化。CI 运行时，任一行未签名、漂移或无法解析都会失败；扫描未找到任何 SKILL.md 时也会失败。"
       }
     }
   ],
@@ -207,8 +207,8 @@
           "zh": "配置"
         },
         "body": {
-          "en": "SKILLSIG_HOME relocates the local lock storage. Plain verify is read-only; --trust records only currently trusted scopes. --force-trust with --trust explicitly rebaselines drifted entries and should follow a scope review. --json and --sarif select structured reports.",
-          "zh": "SKILLSIG_HOME 可更改本地锁存储位置。普通 verify 只读；--trust 只记录当前受信任范围。--force-trust 配合 --trust 显式重置漂移基线，应先检查权限变化。--json 与 --sarif 输出结构化报告。"
+          "en": "SKILLSIG_HOME relocates the local lock storage. Plain verify is read-only; --trust records only currently trusted scopes. --force-trust with --trust explicitly rebaselines drifted entries and should follow a scope review. --json and --sarif select structured reports. A manifest using keys outside the v1 schema reads MALFORMED instead of being silently narrowed.",
+          "zh": "SKILLSIG_HOME 可更改本地锁存储位置。普通 verify 只读；--trust 只记录当前受信任范围。--force-trust 配合 --trust 显式重置漂移基线，应先检查权限变化。--json 与 --sarif 输出结构化报告。使用 v1 schema 之外字段的 manifest 会判为 MALFORMED，而不会静默收窄。"
         }
       },
       {
@@ -220,7 +220,7 @@
           "en": "The CLI exposes the following operations. Commands after the example use your own paths or identifiers.",
           "zh": "CLI 提供以下操作。示例之外的命令需要替换成你的文件路径或标识。"
         },
-        "code": "go run ./cmd/skillsig verify ./testdata/skills/ --no-color\ngo run ./cmd/skillsig verify ./testdata/skills/ --json\n# CI rejects unsigned or drifted rows:\nskillsig verify ./skills --ci --sarif results.sarif"
+        "code": "go run ./cmd/skillsig verify ./testdata/skills/ --no-color\ngo run ./cmd/skillsig verify ./testdata/skills/ --json\n# CI rejects unsigned, drifted or malformed rows (and an empty scan):\nskillsig verify ./skills --ci --sarif results.sarif"
       }
     ]
   },
